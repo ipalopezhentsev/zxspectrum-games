@@ -9,6 +9,7 @@
 
 #define COLS 14
 #define ROWS 9
+#define NUM_HISCORES 5
 
 /* Expanded grid dimensions (each maze cell becomes 2 grid cells + walls) */
 #define ECOLS (2*COLS+1)
@@ -30,6 +31,16 @@ int px, py;    /* player position as flat index into expanded grid */
 int ex, ey;    /* enemy position as flat index into expanded grid */
 unsigned int rseed;
 
+/* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
+unsigned char coinmap[ROWS * COLS];
+int score;
+int coins_left;
+int level;
+
+/* High scores table */
+int hiscores[NUM_HISCORES];
+int hilevel[NUM_HISCORES];
+
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
@@ -37,8 +48,10 @@ unsigned int rseed;
 #define PLAYER_ATTR (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
+#define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
+#define HISCORE_ATTR (BRIGHT | INK_YELLOW | PAPER_BLACK)
 
 /* Exit position in expanded grid */
 #define EXIT_GX (2*COLS-1)
@@ -252,6 +265,7 @@ void draw_maze()
 unsigned char spr_dot[8]  = {0x00,0x00,0x38,0x7C,0x7C,0x7C,0x38,0x00};
 unsigned char spr_enemy[8]= {0x00,0x00,0x10,0x28,0x54,0x28,0x10,0x00};
 unsigned char spr_exit[8] = {0x00,0x82,0x44,0x28,0x10,0x28,0x44,0x82};
+unsigned char spr_coin[8] = {0x00,0x3C,0x7E,0x7E,0x3C,0x3C,0x18,0x00};
 
 /* Write an 8-byte bitmap into character cell (sr, sc) and set attr. */
 void draw_sprite(unsigned char sr, unsigned char sc,
@@ -323,6 +337,14 @@ void snd_caught()
 	intrinsic_ei();
 }
 
+void snd_coin()
+{
+	bit_beep(2, 200);
+	intrinsic_ei();
+	bit_beep(2, 100);
+	intrinsic_ei();
+}
+
 void snd_win()
 {
 	bit_beep(15, 150);
@@ -341,6 +363,128 @@ void draw_enemy(int gx, int gy)
 void erase_enemy(int gx, int gy)
 {
 	clear_cell(SROW(gy), SCOL(gx));
+}
+
+void draw_coin(int cx, int cy)
+{
+	int gx, gy;
+	gx = cx * 2 + 1;
+	gy = cy * 2 + 1;
+	draw_sprite(SROW(gy), SCOL(gx), spr_coin, COIN_ATTR);
+}
+
+/* Place coins on ~40% of maze cells, avoiding start/exit/enemy */
+void place_coins()
+{
+	int cx, cy, i;
+	coins_left = 0;
+	for (i = 0; i < ROWS * COLS; i++)
+		coinmap[i] = 0;
+
+	for (cy = 0; cy < ROWS; cy++)
+		for (cx = 0; cx < COLS; cx++) {
+			/* Skip player start (0,0), exit cell, enemy start */
+			if (cx == 0 && cy == 0) continue;
+			if (cx == COLS-1 && cy == ROWS-1) continue;
+			if (cx == COLS-1 && cy == 0) continue;
+			if (rng() % 5 < 2) {
+				coinmap[cy * COLS + cx] = 1;
+				coins_left++;
+				draw_coin(cx, cy);
+			}
+		}
+}
+
+/* Check and collect coin at expanded grid position (gx,gy) */
+int try_collect_coin(int gx, int gy)
+{
+	int cx, cy;
+	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
+	cx = gx >> 1;
+	cy = gy >> 1;
+	if (coinmap[cy * COLS + cx]) {
+		coinmap[cy * COLS + cx] = 0;
+		coins_left--;
+		score += 10;
+		return 1;
+	}
+	return 0;
+}
+
+/* Display score on the title row */
+void show_score()
+{
+	/* Position cursor at row 0, col 18 area for score display */
+	unsigned char *attr;
+	int c;
+	/* Use gotoxy to position text — col 0 is leftmost */
+	gotoxy(18, 0);
+	printf("S:%04d", score);
+	/* Ensure title attr covers score area */
+	for (c = 18; c < 24; c++)
+		set_attr(0, c, TITLE_ATTR);
+}
+
+/* Update high scores table, return rank (0-based) or -1 */
+int update_hiscores()
+{
+	int i, j;
+	for (i = 0; i < NUM_HISCORES; i++) {
+		if (score > hiscores[i]) {
+			/* Shift lower scores down */
+			for (j = NUM_HISCORES - 1; j > i; j--) {
+				hiscores[j] = hiscores[j-1];
+				hilevel[j] = hilevel[j-1];
+			}
+			hiscores[i] = score;
+			hilevel[i] = level;
+			return i;
+		}
+	}
+	return -1;
+}
+
+/* Display high scores screen */
+void show_hiscores(int rank)
+{
+	int i, r;
+	unsigned char attr;
+
+	clear_pixels();
+	zx_cls_attr(PAPER_BLACK | INK_BLACK);
+	colour_title();
+	printf("  -= HIGH SCORES =-\n\n");
+
+	for (i = 0; i < NUM_HISCORES; i++) {
+		r = 3 + i * 2;
+		if (hiscores[i] == 0) {
+			gotoxy(6, r);
+			printf("%d.  ----", i + 1);
+		} else {
+			gotoxy(6, r);
+			printf("%d.  %04d  Lv %d", i + 1,
+			       hiscores[i], hilevel[i]);
+		}
+		attr = (i == rank) ? (BRIGHT | INK_GREEN | PAPER_BLACK)
+		                    : HISCORE_ATTR;
+		{
+			int c;
+			for (c = 4; c < 28; c++)
+				set_attr(r, c, attr);
+		}
+	}
+
+	gotoxy(4, 16);
+	printf("  Press any key...");
+	{
+		int c;
+		for (c = 4; c < 28; c++)
+			set_attr(16, c, TITLE_ATTR);
+	}
+
+#ifdef __HAVE_KEYBOARD
+	fgetc_cons();
+#endif
 }
 
 /* BFS on maze cell grid (14x9=126 cells instead of 29x19=551).
@@ -477,11 +621,19 @@ void move_enemy()
 	else if (dir == 2) ey--;
 	else if (dir == 3) ey++;
 
-	/* Redraw exit/player if enemy was on their cell */
+	/* Redraw exit/player/coin if enemy was on their cell */
 	if (old_ex == EXIT_GX && old_ey == EXIT_GY)
 		draw_exit(EXIT_GX, EXIT_GY);
 	if (old_ex == px && old_ey == py)
 		draw_dot(px, py);
+	/* Redraw coin if enemy left a coin cell */
+	if ((old_ex & 1) && (old_ey & 1)) {
+		int ccx, ccy;
+		ccx = old_ex >> 1;
+		ccy = old_ey >> 1;
+		if (coinmap[ccy * COLS + ccx])
+			draw_coin(ccx, ccy);
+	}
 
 	draw_enemy(ex, ey);
 }
@@ -501,6 +653,15 @@ main()
 	int moves;
 	int caught;
 	unsigned int tick;
+	int rank;
+
+	/* Initialize high scores */
+	for (rank = 0; rank < NUM_HISCORES; rank++) {
+		hiscores[rank] = 0;
+		hilevel[rank] = 0;
+	}
+	level = 0;
+	score = 0;
 
 	while (1) {
 		zx_border(INK_BLUE);
@@ -519,9 +680,10 @@ main()
 #endif
 		if (rseed == 0) rseed = 42;
 
+		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
-		printf("  MAZE  O/P/Q/A=move\n");
+		printf("  MAZE Lv%d  O/P/Q/A\n", level);
 		colour_title();
 
 		generate_maze();
@@ -539,10 +701,12 @@ main()
 		last_edir = 0;
 		cached_steps = 0;
 
-		/* Draw exit, enemy, and player */
+		/* Place coins and draw everything */
+		place_coins();
 		draw_exit(EXIT_GX, EXIT_GY);
 		draw_enemy(ex, ey);
 		draw_dot(px, py);
+		show_score();
 
 		while (1) {
 #ifdef __HAVE_KEYBOARD
@@ -565,17 +729,25 @@ main()
 					moves++;
 					draw_dot(px, py);
 
+					/* Collect coin? */
+					if (try_collect_coin(px, py)) {
+						snd_coin();
+						show_score();
+					}
+
 					/* Player walked onto enemy? */
 					if (px == ex && py == ey)
 						caught = 1;
 
 					if (px == EXIT_GX &&
 					    py == EXIT_GY) {
+						/* Bonus: 50 pts for escaping */
+						score += 50;
 						snd_win();
 						printf("\n\n\n\n\n\n\n\n\n\n\n");
-						printf("\n\n  YOU WIN!");
-						printf(" Moves: %d\n", moves);
-						printf("  Any key=new maze");
+						printf("\n\n  ESCAPED! +50");
+						printf(" Score:%d\n", score);
+						printf("  Any key=next maze");
 						{
 							int wr;
 							for (wr = 13; wr <= 16; wr++) {
@@ -617,8 +789,8 @@ main()
 				snd_caught();
 				printf("\n\n\n\n\n\n\n\n\n\n\n");
 				printf("\n\n  CAUGHT!");
-				printf(" Moves: %d\n", moves);
-				printf("  Any key=new maze");
+				printf(" Score:%d\n", score);
+				printf("  Any key...");
 				{
 					int wr;
 					for (wr = 13; wr <= 16; wr++) {
@@ -632,6 +804,12 @@ main()
 #ifdef __HAVE_KEYBOARD
 				fgetc_cons();
 #endif
+				/* Game over: show high scores */
+				rank = update_hiscores();
+				show_hiscores(rank);
+				/* Reset for new game */
+				score = 0;
+				level = 0;
 				break;
 			}
 		}
