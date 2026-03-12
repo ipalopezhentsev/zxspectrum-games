@@ -83,3 +83,34 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 - `drawb()` reliably renders box outlines at correct positions.
 - Text-based separators (`---`) are more reliable than pixel separator lines.
 - `plot()`/`unplot()` can corrupt pixel data and attributes unpredictably — prefer direct screen memory writes for game sprites (see above)
+
+## sccz80 compiler bugs — CRITICAL
+
+### `unsigned char` locals corrupted across function calls
+sccz80 does NOT reliably preserve `unsigned char` (and likely `char`) local variables across function calls. After any function call (including `rng()`, `draw_sprite()`, `set_attr()`, `memset()`, etc.), 8-bit local variables may contain garbage values. This causes:
+- Loop indices going out of bounds → array corruption, infinite loops, crashes
+- Screen coordinates becoming wrong → graphics drawn at wrong positions
+- Variables used after a function call having wrong values
+
+**Rule: ALL local variables that are live across a function call MUST be `int`, not `unsigned char` or `char`.** This applies to:
+- Loop counters in loops that contain function calls
+- Variables set before a function call and read after it
+- Function parameters of functions that call other functions (use `int` params)
+
+`unsigned char` locals are ONLY safe when:
+- Used in a function that makes NO function calls (pure computation)
+- Set and consumed entirely BETWEEN two function calls (not across one)
+- Used as the loop variable in `for (i = 0; i < 8; i++) { *base = x; base += 256; }` style loops with no function calls in the body
+
+### `unsigned char` globals are fine
+Global variables as `unsigned char` work correctly — the compiler loads/stores them from fixed memory addresses, not registers. Use `unsigned char` freely for globals to save RAM.
+
+### Shift-as-multiply may silently truncate to 8 bits
+`(unsigned int)row << 5` may be evaluated as an 8-bit shift despite the cast, overflowing for values ≥ 8. Use `row * 32` instead — sccz80's multiplication routine handles 16-bit correctly. In general, prefer `*` over `<<` for computed multiplies when the operand could be `unsigned char`.
+
+### Safe optimizations for z88dk/sccz80
+- **Global narrowing**: `unsigned char` for global variables (positions, counters, flags) — saves RAM and generates faster load/store
+- **`memset()` for bulk clears**: `memset((unsigned char *)16384u, 0, 6144u)` for screen clearing, `memset(array, 0, size)` for array init — faster than manual loops
+- **`SCR_ADDR` macro**: precompute screen addresses with `16384u + ((unsigned int)(sr >> 3) << 11) + ((unsigned int)(sr & 7) << 5) + sc` — avoids repeated calculation
+- **`unsigned char` for arrays that only store small values**: `stk[]`, `vis[]` etc. can be `unsigned char` instead of `int` to halve memory usage
+- **`unsigned char` function params for leaf functions**: functions like `set_attr(unsigned char row, unsigned char col, unsigned char attr)` that don't call other functions can safely use 8-bit params

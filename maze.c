@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <graphics.h>
 #include <conio.h>
 #include <features.h>
@@ -23,24 +24,29 @@
 #define SROW(gy) (MAZE_R0 + (gy))
 #define SCOL(gx) (MAZE_C0 + (gx))
 
+/* Screen address from char cell (sr, sc) — avoids repeating the formula */
+#define SCR_ADDR(sr, sc) \
+	(16384u + ((unsigned int)((sr) >> 3) << 11) \
+	 + ((unsigned int)((sr) & 7) << 5) + (sc))
+
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
 /* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
 unsigned char wallmap[EROWS * ECOLS];
-int px, py;    /* player position as flat index into expanded grid */
-int enx[2], eny[2];    /* enemy positions in expanded grid */
-int last_edir_arr[2];  /* last direction each enemy moved */
+unsigned char px, py;    /* player position in expanded grid */
+unsigned char enx[2], eny[2];    /* enemy positions in expanded grid */
+unsigned char last_edir_arr[2];  /* last direction each enemy moved */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char coinmap[ROWS * COLS];
 int score;
-int coins_left;
-int level;
+unsigned char coins_left;
+unsigned char level;
 
 /* High scores table */
 int hiscores[NUM_HISCORES];
-int hilevel[NUM_HISCORES];
+unsigned char hilevel[NUM_HISCORES];
 
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
@@ -79,10 +85,7 @@ void draw_brick(unsigned char sr, unsigned char sc)
 {
 	unsigned char *base;
 	unsigned char i;
-	unsigned int addr;
-	addr = 16384u + ((unsigned int)(sr >> 3) << 11)
-	     + ((unsigned int)(sr & 7) << 5) + sc;
-	base = (unsigned char *)addr;
+	base = (unsigned char *)SCR_ADDR(sr, sc);
 	for (i = 0; i < 8; i++) {
 		*base = brick[i];
 		base += 256;
@@ -93,17 +96,13 @@ void draw_brick(unsigned char sr, unsigned char sc)
 /* Clear all pixel data (6144 bytes at 16384) */
 void clear_pixels()
 {
-	unsigned char *p;
-	unsigned int i;
-	p = (unsigned char *)16384u;
-	for (i = 0; i < 6144u; i++)
-		*p++ = 0;
+	memset((unsigned char *)16384u, 0, 6144u);
 }
 
 /* Colour the title row */
 void colour_title()
 {
-	int c;
+	unsigned char c;
 	for (c = 0; c < 32; c++)
 		set_attr(0, c, TITLE_ATTR);
 }
@@ -117,8 +116,8 @@ unsigned int rng()
 /* Visited flags and explicit stack for DFS and BFS.
    Sized for expanded grid (largest use case). */
 unsigned char vis[EROWS * ECOLS];
-int stk[EROWS * ECOLS];
-int sp;
+unsigned char stk[EROWS * ECOLS];
+unsigned char sp;
 
 void generate_maze()
 {
@@ -275,10 +274,7 @@ void draw_sprite(unsigned char sr, unsigned char sc,
 {
 	unsigned char *base;
 	unsigned char i;
-	unsigned int addr;
-	addr = 16384u + ((unsigned int)(sr >> 3) << 11)
-	     + ((unsigned int)(sr & 7) << 5) + sc;
-	base = (unsigned char *)addr;
+	base = (unsigned char *)SCR_ADDR(sr, sc);
 	for (i = 0; i < 8; i++) {
 		*base = spr[i];
 		base += 256;
@@ -291,10 +287,7 @@ void clear_cell(unsigned char sr, unsigned char sc)
 {
 	unsigned char *base;
 	unsigned char i;
-	unsigned int addr;
-	addr = 16384u + ((unsigned int)(sr >> 3) << 11)
-	     + ((unsigned int)(sr & 7) << 5) + sc;
-	base = (unsigned char *)addr;
+	base = (unsigned char *)SCR_ADDR(sr, sc);
 	for (i = 0; i < 8; i++) {
 		*base = 0;
 		base += 256;
@@ -302,17 +295,17 @@ void clear_cell(unsigned char sr, unsigned char sc)
 	set_attr(sr, sc, CORR_ATTR);
 }
 
-void draw_dot(int gx, int gy)
+void draw_dot(unsigned char gx, unsigned char gy)
 {
 	draw_sprite(SROW(gy), SCOL(gx), spr_dot, PLAYER_ATTR);
 }
 
-void erase_dot(int gx, int gy)
+void erase_dot(unsigned char gx, unsigned char gy)
 {
 	clear_cell(SROW(gy), SCOL(gx));
 }
 
-void draw_exit(int gx, int gy)
+void draw_exit(unsigned char gx, unsigned char gy)
 {
 	draw_sprite(SROW(gy), SCOL(gx), spr_exit, EXIT_ATTR);
 }
@@ -357,31 +350,30 @@ void snd_win()
 	intrinsic_ei();
 }
 
-void draw_enemy(int gx, int gy)
+void draw_enemy(unsigned char gx, unsigned char gy)
 {
 	draw_sprite(SROW(gy), SCOL(gx), spr_enemy, ENEMY_ATTR);
 }
 
-void erase_enemy(int gx, int gy)
+void erase_enemy(unsigned char gx, unsigned char gy)
 {
 	clear_cell(SROW(gy), SCOL(gx));
 }
 
-void draw_coin(int cx, int cy)
+void draw_coin(unsigned char cx, unsigned char cy)
 {
-	int gx, gy;
-	gx = cx * 2 + 1;
-	gy = cy * 2 + 1;
+	unsigned char gx, gy;
+	gx = (cx << 1) + 1;
+	gy = (cy << 1) + 1;
 	draw_sprite(SROW(gy), SCOL(gx), spr_coin, COIN_ATTR);
 }
 
 /* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
 void place_coins()
 {
-	int cx, cy, i, gx, gy;
+	int cx, cy, gx, gy;
 	coins_left = 0;
-	for (i = 0; i < ROWS * COLS; i++)
-		coinmap[i] = 0;
+	memset(coinmap, 0, ROWS * COLS);
 
 	for (cy = 0; cy < ROWS; cy++)
 		for (cx = 0; cx < COLS; cx++) {
@@ -401,14 +393,14 @@ void place_coins()
 }
 
 /* Check and collect coin at expanded grid position (gx,gy) */
-int try_collect_coin(int gx, int gy)
+unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 {
-	int cx, cy;
+	unsigned char cx, cy;
 	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
 	cx = gx >> 1;
 	cy = gy >> 1;
-	if (coinmap[cy * COLS + cx]) {
-		coinmap[cy * COLS + cx] = 0;
+	if (coinmap[(unsigned int)cy * COLS + cx]) {
+		coinmap[(unsigned int)cy * COLS + cx] = 0;
 		coins_left--;
 		score += 10;
 		return 1;
@@ -419,13 +411,9 @@ int try_collect_coin(int gx, int gy)
 /* Display score on the title row */
 void show_score()
 {
-	/* Position cursor at row 0, col 18 area for score display */
-	unsigned char *attr;
 	int c;
-	/* Use gotoxy to position text — col 0 is leftmost */
 	gotoxy(18, 0);
 	printf("S:%04d", score);
-	/* Ensure title attr covers score area */
 	for (c = 18; c < 24; c++)
 		set_attr(0, c, TITLE_ATTR);
 }
@@ -438,8 +426,8 @@ int update_hiscores()
 		if (score > hiscores[i]) {
 			/* Shift lower scores down */
 			for (j = NUM_HISCORES - 1; j > i; j--) {
-				hiscores[j] = hiscores[j-1];
-				hilevel[j] = hilevel[j-1];
+				hiscores[j] = hiscores[(unsigned char)(j-1)];
+				hilevel[j] = hilevel[(unsigned char)(j-1)];
 			}
 			hiscores[i] = score;
 			hilevel[i] = level;
@@ -450,9 +438,9 @@ int update_hiscores()
 }
 
 /* Display high scores screen */
-void show_hiscores(int rank)
+void show_hiscores(char rank)
 {
-	int i, r;
+	int i, r, c;
 	unsigned char attr;
 
 	clear_pixels();
@@ -461,7 +449,7 @@ void show_hiscores(int rank)
 	printf("  -= HIGH SCORES =-\n\n");
 
 	for (i = 0; i < NUM_HISCORES; i++) {
-		r = 3 + i * 2;
+		r = 3 + (i << 1);
 		if (hiscores[i] == 0) {
 			gotoxy(6, r);
 			printf("%d.  ----", i + 1);
@@ -472,20 +460,14 @@ void show_hiscores(int rank)
 		}
 		attr = (i == rank) ? (BRIGHT | INK_GREEN | PAPER_BLACK)
 		                    : HISCORE_ATTR;
-		{
-			int c;
-			for (c = 4; c < 28; c++)
-				set_attr(r, c, attr);
-		}
+		for (c = 4; c < 28; c++)
+			set_attr(r, c, attr);
 	}
 
 	gotoxy(4, 16);
 	printf("  Press any key...");
-	{
-		int c;
-		for (c = 4; c < 28; c++)
-			set_attr(16, c, TITLE_ATTR);
-	}
+	for (c = 4; c < 28; c++)
+		set_attr(16, c, TITLE_ATTR);
 
 #ifdef __HAVE_KEYBOARD
 	fgetc_cons();
@@ -510,8 +492,7 @@ int enemy_bfs(int exx, int eyy)
 	efi = ecy * COLS + ecx;
 
 	/* Clear vis (may be dirty from generate_maze or previous BFS) */
-	for (head = 0; head < ROWS * COLS; head++)
-		vis[head] = 0;
+	memset(vis, 0, ROWS * COLS);
 
 	head = 0;
 	tail = 0;
@@ -646,24 +627,25 @@ void move_enemy(int n)
 
 /* Pick a random maze cell center in expanded grid, avoiding
    positions already used. ox1,oy1,ox2,oy2 = positions to avoid
-   (-1 means ignore). */
-void random_start(int *gx, int *gy,
-                  int ox1, int oy1, int ox2, int oy2)
+   (255 means ignore). */
+void random_start(unsigned char *gx, unsigned char *gy,
+                  unsigned char ox1, unsigned char oy1,
+                  unsigned char ox2, unsigned char oy2)
 {
-	int cx, cy;
+	unsigned char cx, cy;
 	do {
 		cx = rng() % COLS;
 		cy = rng() % ROWS;
-		*gx = cx * 2 + 1;
-		*gy = cy * 2 + 1;
+		*gx = (cx << 1) + 1;
+		*gy = (cy << 1) + 1;
 	} while ((*gx == ox1 && *gy == oy1) ||
 	         (*gx == ox2 && *gy == oy2) ||
 	         (*gx == EXIT_GX && *gy == EXIT_GY));
 }
 
-int can_move(int dx, int dy)
+unsigned char can_move(char dx, char dy)
 {
-	return !wallmap[(py + dy) * ECOLS + (px + dx)];
+	return !wallmap[(unsigned int)(py + dy) * ECOLS + px + dx];
 }
 
 /* Enemy move interval — number of main loop ticks between moves */
@@ -673,7 +655,6 @@ main()
 {
 	char k;
 	int dx, dy;
-	int moves;
 	int caught;
 	unsigned int tick;
 	int rank;
@@ -714,10 +695,9 @@ main()
 		draw_maze();
 
 		/* Random starting positions */
-		random_start(&px, &py, -1, -1, -1, -1);
-		random_start(&enx[0], &eny[0], px, py, -1, -1);
+		random_start(&px, &py, 255, 255, 255, 255);
+		random_start(&enx[0], &eny[0], px, py, 255, 255);
 		random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
-		moves = 0;
 		caught = 0;
 		tick = 0;
 		last_edir_arr[0] = 0;
@@ -749,7 +729,6 @@ main()
 					erase_dot(px, py);
 					px += dx;
 					py += dy;
-					moves++;
 					draw_dot(px, py);
 
 					/* Collect coin? */
@@ -773,12 +752,10 @@ main()
 						printf(" Score:%d\n", score);
 						printf("  Any key=next maze");
 						{
-							int wr;
-							for (wr = 13; wr <= 16; wr++) {
-								int wc;
+							int wr, wc;
+							for (wr = 13; wr <= 16; wr++)
 								for (wc = 0; wc < 32; wc++)
 									set_attr(wr, wc, WIN_ATTR);
-							}
 						}
 #ifdef __HAVE_KEYBOARD
 						fgetc_cons();
@@ -818,14 +795,12 @@ main()
 				printf(" Score:%d\n", score);
 				printf("  Any key...");
 				{
-					int wr;
-					for (wr = 13; wr <= 16; wr++) {
-						int wc;
+					int wr, wc;
+					for (wr = 13; wr <= 16; wr++)
 						for (wc = 0; wc < 32; wc++)
 							set_attr(wr, wc,
 							  BRIGHT | INK_RED |
 							  PAPER_BLACK);
-					}
 				}
 #ifdef __HAVE_KEYBOARD
 				fgetc_cons();
