@@ -70,11 +70,61 @@ char txt_buffer[TEXT_SCR_WIDTH + 1];
 #define EXIT_GX (2*COLS-1)
 #define EXIT_GY (2*ROWS-1)
 
+/* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
+//don't remove formatting and binary constants, it's more readable this way
 /* Brick pattern: red ink on yellow paper */
 unsigned char brick[8] = {
-	0b11110111, 0b11110111, 0b11110111, 0b00000000,
-	0b11011111, 0b11011111, 0b11011111, 0b00000000
+	0b11110111, 
+	0b11110111, 
+	0b11110111, 
+	0b00000000,
+	0b11011111, 
+	0b11011111, 
+	0b11011111, 
+	0b00000000
 };
+
+unsigned char spr_dot[8]  = {
+	0b00000000,
+	0b00000000,
+	0b00111000,
+	0b01111100,
+	0b01111100,
+	0b01111100,
+	0b00111000,
+	0b00000000
+};
+unsigned char spr_enemy[8]= {
+	0b00000000,
+	0b00000000,
+	0b00010000,
+	0b00101000,
+	0b01010100,
+	0b00101000,
+	0b00010000,
+	0b00000000
+};
+unsigned char spr_exit[8] = {
+	0b00000000,
+	0b10000010,
+	0b01000100,
+	0b00101000,
+	0b00010000,
+	0b00101000,
+	0b01000100,
+	0b10000010
+};
+unsigned char spr_coin[8] = {
+	0b00000000,
+	0b00111100,
+	0b01111110,
+	0b01111110,
+	0b00111100,
+	0b00111100,
+	0b00011000,
+	0b00000000
+};
+
 
 /* Set attribute for character cell (row, col) */
 void set_attr(unsigned char row, unsigned char col,
@@ -259,49 +309,6 @@ void draw_maze()
 	}
 }
 
-/* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
-//don't remove formatting and binary constants, it's more readable this way
-unsigned char spr_dot[8]  = {
-	0b00000000,
-	0b00000000,
-	0b00111000,
-	0b01111100,
-	0b01111100,
-	0b01111100,
-	0b00111000,
-	0b00000000
-};
-unsigned char spr_enemy[8]= {
-	0b00000000,
-	0b00000000,
-	0b00010000,
-	0b00101000,
-	0b01010100,
-	0b00101000,
-	0b00010000,
-	0b00000000
-};
-unsigned char spr_exit[8] = {
-	0b00000000,
-	0b10000010,
-	0b01000100,
-	0b00101000,
-	0b00010000,
-	0b00101000,
-	0b01000100,
-	0b10000010
-};
-unsigned char spr_coin[8] = {
-	0b00000000,
-	0b00111100,
-	0b01111110,
-	0b01111110,
-	0b00111100,
-	0b00111100,
-	0b00011000,
-	0b00000000
-};
-
 /* Write an 8-byte bitmap into character cell (sr, sc) and set attr. */
 void draw_sprite(unsigned char sr, unsigned char sc,
                  unsigned char *spr, unsigned char attr)
@@ -346,13 +353,14 @@ void draw_exit(unsigned char gx, unsigned char gy)
 
 void snd_step()
 {
-	bit_beep(1, 400);
+	bit_beep(0, 400);
+	//otherwise keyboard will stop responding - seems that bit_beep disables interrupts
 	intrinsic_ei();
 }
 
 void snd_bump()
 {
-	bit_beep(1, 800);
+	bit_beep(0, 800);
 	intrinsic_ei();
 }
 
@@ -368,9 +376,9 @@ void snd_caught()
 
 void snd_coin()
 {
-	bit_beep(2, 200);
-	intrinsic_ei();
-	bit_beep(2, 100);
+	bit_beep(0, 200);
+	//intrinsic_ei();
+	bit_beep(0, 100);
 	intrinsic_ei();
 }
 
@@ -846,7 +854,9 @@ main()
 
 					/* Collect coin? */
 					if (try_collect_coin(px, py)) {
+						zx_border(INK_YELLOW);
 						snd_coin();
+						zx_border(INK_BLACK);
 						show_score();
 					}
 
