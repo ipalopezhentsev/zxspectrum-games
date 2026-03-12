@@ -168,6 +168,34 @@ void generate_maze()
 	}
 }
 
+/* After generating the perfect maze, punch extra holes to create
+   loops and small halls so the player can dodge the enemy. */
+void add_extra_passages()
+{
+	int x, y, i, n;
+
+	/* Pass 1: randomly remove ~20% of remaining walls → loops */
+	for (y = 0; y < ROWS; y++)
+		for (x = 0; x < COLS; x++) {
+			if (x < COLS - 1 && (walls[y][x] & 1) && rng() % 5 == 0)
+				walls[y][x] &= ~1;
+			if (y < ROWS - 1 && (walls[y][x] & 2) && rng() % 5 == 0)
+				walls[y][x] &= ~2;
+		}
+
+	/* Pass 2: create a few 2x2 halls by removing shared walls
+	   between a 2x2 block of maze cells */
+	n = 3 + rng() % 3;  /* 3-5 halls */
+	for (i = 0; i < n; i++) {
+		x = rng() % (COLS - 1);
+		y = rng() % (ROWS - 1);
+		/* Remove walls between (x,y), (x+1,y), (x,y+1), (x+1,y+1) */
+		walls[y][x]     &= ~3;  /* right + bottom */
+		walls[y][x + 1] &= ~2;  /* bottom */
+		walls[y + 1][x] &= ~1;  /* right */
+	}
+}
+
 void draw_maze()
 {
 	int gr, gc, sr, sc, w;
@@ -181,7 +209,22 @@ void draw_maze()
 			w = 0;
 
 			if (!(gr & 1) && !(gc & 1)) {
-				w = 1;
+				/* Border posts are always walls */
+				if (gr == 0 || gr == 2*ROWS ||
+				    gc == 0 || gc == 2*COLS) {
+					w = 1;
+				} else {
+					/* Interior corner post: wall only if
+					   any adjacent wall segment exists */
+					int cy, cx;
+					cy = gr / 2;
+					cx = gc / 2;
+					if ((walls[cy-1][cx-1] & 1) ||
+					    (walls[cy][cx-1] & 1) ||
+					    (walls[cy-1][cx-1] & 2) ||
+					    (walls[cy-1][cx] & 2))
+						w = 1;
+				}
 			}
 			else if (!(gr & 1) && (gc & 1)) {
 				if (gr == 0 || gr == 2 * ROWS)
@@ -266,7 +309,7 @@ void snd_step()
 
 void snd_bump()
 {
-	bit_beep(3, 800);
+	bit_beep(1, 800);
 	intrinsic_ei();
 }
 
@@ -300,68 +343,95 @@ void erase_enemy(int gx, int gy)
 	clear_cell(SROW(gy), SCOL(gx));
 }
 
-/* BFS from enemy to player on expanded grid.
-   Uses flat indices — no multiply/divide in inner loop.
+/* BFS on maze cell grid (14x9=126 cells instead of 29x19=551).
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 int enemy_bfs()
 {
 	int head, tail;
-	int ci, ni, d;
-	int efi;  /* enemy flat index */
+	int ci, ni;
+	int ecx, ecy, pcx, pcy;
+	int efi;
+	int cr, cc;
+	unsigned char d;
 
-	for (ci = 0; ci < EROWS * ECOLS; ci++)
-		vis[ci] = 0;
+	/* Convert expanded grid to maze cell coords (only valid at odd pos) */
+	ecx = ex >> 1;  ecy = ey >> 1;
+	pcx = px >> 1;  pcy = py >> 1;
 
-	efi = ey * ECOLS + ex;
+	efi = ecy * COLS + ecx;
 
-	/* BFS from player back to enemy, so we get the first step */
+	/* Clear vis (may be dirty from generate_maze or previous BFS) */
+	for (head = 0; head < ROWS * COLS; head++)
+		vis[head] = 0;
+
 	head = 0;
 	tail = 0;
-	ci = py * ECOLS + px;
+	ci = pcy * COLS + pcx;
 	stk[tail++] = ci;
-	vis[ci] = 5; /* mark as origin */
+	vis[ci] = 5;
 
 	while (head < tail) {
 		ci = stk[head++];
 
 		if (ci == efi) {
 			d = vis[efi] - 1;
-			if (d == 0) return 1;
-			if (d == 1) return 0;
-			if (d == 2) return 3;
-			if (d == 3) return 2;
+			for (ci = 0; ci < tail; ci++)
+				vis[stk[ci]] = 0;
+			if (d == 0) return 1;  /* was left, enemy goes right */
+			if (d == 1) return 0;  /* was right, enemy goes left */
+			if (d == 2) return 3;  /* was up, enemy goes down */
+			if (d == 3) return 2;  /* was down, enemy goes up */
 			return -1;
 		}
 
-		/* Left: ci - 1 */
-		ni = ci - 1;
-		if (!vis[ni] && !wallmap[ni]) {
-			vis[ni] = 1;
-			stk[tail++] = ni;
+		cr = ci / COLS;
+		cc = ci - cr * COLS;
+
+		/* Left */
+		if (cc > 0) {
+			ni = ci - 1;
+			if (!vis[ni] && !(walls[cr][cc - 1] & 1)) {
+				vis[ni] = 1;
+				stk[tail++] = ni;
+			}
 		}
-		/* Right: ci + 1 */
-		ni = ci + 1;
-		if (!vis[ni] && !wallmap[ni]) {
-			vis[ni] = 2;
-			stk[tail++] = ni;
+		/* Right */
+		if (cc < COLS - 1) {
+			ni = ci + 1;
+			if (!vis[ni] && !(walls[cr][cc] & 1)) {
+				vis[ni] = 2;
+				stk[tail++] = ni;
+			}
 		}
-		/* Up: ci - ECOLS */
-		ni = ci - ECOLS;
-		if (ni >= 0 && !vis[ni] && !wallmap[ni]) {
-			vis[ni] = 3;
-			stk[tail++] = ni;
+		/* Up */
+		if (cr > 0) {
+			ni = ci - COLS;
+			if (!vis[ni] && !(walls[cr - 1][cc] & 2)) {
+				vis[ni] = 3;
+				stk[tail++] = ni;
+			}
 		}
-		/* Down: ci + ECOLS */
-		ni = ci + ECOLS;
-		if (ni < EROWS * ECOLS && !vis[ni] && !wallmap[ni]) {
-			vis[ni] = 4;
-			stk[tail++] = ni;
+		/* Down */
+		if (cr < ROWS - 1) {
+			ni = ci + COLS;
+			if (!vis[ni] && !(walls[cr][cc] & 2)) {
+				vis[ni] = 4;
+				stk[tail++] = ni;
+			}
 		}
 	}
+	for (ci = 0; ci < tail; ci++)
+		vis[stk[ci]] = 0;
 	return -1;
 }
 
-/* Pick a random valid direction from (ex,ey) */
+/* Last direction the enemy moved (for corridor continuation) */
+int last_edir;
+/* Cached BFS direction and remaining uses */
+int cached_dir;
+int cached_steps;
+
+/* Pick a random valid direction from (ex,ey) on expanded grid */
 int enemy_random_dir()
 {
 	int dirs[4], nd;
@@ -376,17 +446,27 @@ int enemy_random_dir()
 	return dirs[rng() % nd];
 }
 
-/* Move enemy one step — 50% chance to chase, 50% random wander */
+/* Move enemy one step.
+   At odd position (maze cell): use cached BFS, recalc, or random.
+   At even position (corridor): continue in same direction. */
 void move_enemy()
 {
 	int dir;
 	int old_ex, old_ey;
+	int fi;
 
-	if (rng() % 2 == 0)
-		dir = enemy_bfs();
-	else
-		dir = enemy_random_dir();
+	if ((ex & 1) && (ey & 1)) {
+		/* At maze cell — 75% chase, 25% random */
+		if (rng() % 4 < 3)
+			dir = enemy_bfs();
+		else
+			dir = enemy_random_dir();
+	} else {
+		/* In corridor between cells — keep going */
+		dir = last_edir;
+	}
 	if (dir < 0) return;
+	last_edir = dir;
 
 	old_ex = ex;
 	old_ey = ey;
@@ -412,7 +492,7 @@ int can_move(int dx, int dy)
 }
 
 /* Enemy move interval — number of main loop ticks between moves */
-#define ENEMY_TICK 600
+#define ENEMY_TICK 300
 
 main()
 {
@@ -445,6 +525,7 @@ main()
 		colour_title();
 
 		generate_maze();
+		add_extra_passages();
 		draw_maze();
 
 		/* Positions in expanded grid coords */
@@ -455,6 +536,8 @@ main()
 		moves = 0;
 		caught = 0;
 		tick = 0;
+		last_edir = 0;
+		cached_steps = 0;
 
 		/* Draw exit, enemy, and player */
 		draw_exit(EXIT_GX, EXIT_GY);
