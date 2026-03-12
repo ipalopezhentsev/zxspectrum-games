@@ -10,14 +10,24 @@
 #define COLS 14
 #define ROWS 9
 
+/* Expanded grid dimensions (each maze cell becomes 2 grid cells + walls) */
+#define ECOLS (2*COLS+1)
+#define EROWS (2*ROWS+1)
+
 /* Maze grid origin in character cells */
 #define MAZE_R0 2
 #define MAZE_C0 1
 
+/* Screen char row/col from expanded grid position */
+#define SROW(gy) (MAZE_R0 + (gy))
+#define SCOL(gx) (MAZE_C0 + (gx))
+
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
-int px, py;
-int ex, ey;  /* enemy position */
+/* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
+unsigned char wallmap[EROWS * ECOLS];
+int px, py;    /* player position as flat index into expanded grid */
+int ex, ey;    /* enemy position as flat index into expanded grid */
 unsigned int rseed;
 
 #define ATTR_BASE   22528
@@ -30,13 +40,9 @@ unsigned int rseed;
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
 
-/* Screen char row/col of corridor cell for maze cell (gx,gy) */
-#define IROW(gy) (MAZE_R0 + 1 + (gy) * 2)
-#define ICOL(gx) (MAZE_C0 + 1 + (gx) * 2)
-
-/* Pixel center of corridor cell (plot uses y=0 at top) */
-#define ICX(gx) (ICOL(gx) * 8 + 3)
-#define ICY(gy) (IROW(gy) * 8 + 4)
+/* Exit position in expanded grid */
+#define EXIT_GX (2*COLS-1)
+#define EXIT_GY (2*ROWS-1)
 
 /* Brick pattern: red ink on yellow paper */
 unsigned char brick[8] = {
@@ -93,10 +99,10 @@ unsigned int rng()
 	return rseed >> 2;
 }
 
-/* Visited flags and explicit stack for DFS
-   (no recursion — Z80 stack is tiny) */
-unsigned char visited[ROWS][COLS];
-unsigned char stack[COLS * ROWS];
+/* Visited flags and explicit stack for DFS and BFS.
+   Sized for expanded grid (largest use case). */
+unsigned char vis[EROWS * ECOLS];
+int stk[EROWS * ECOLS];
 int sp;
 
 void generate_maze()
@@ -107,32 +113,32 @@ void generate_maze()
 	for (y = 0; y < ROWS; y++)
 		for (x = 0; x < COLS; x++) {
 			walls[y][x] = 3;
-			visited[y][x] = 0;
+			vis[y * COLS + x] = 0;
 		}
 
 	/* Recursive backtracker using explicit stack */
 	cx = 0; cy = 0;
-	visited[0][0] = 1;
+	vis[0] = 1;
 	sp = 0;
-	stack[sp++] = 0;
+	stk[sp++] = 0;
 
 	while (sp > 0) {
 		/* Collect unvisited neighbors */
 		nd = 0;
-		if (cx > 0 && !visited[cy][cx-1])
+		if (cx > 0 && !vis[cy * COLS + cx - 1])
 			dirs[nd++] = 0;
-		if (cx < COLS-1 && !visited[cy][cx+1])
+		if (cx < COLS-1 && !vis[cy * COLS + cx + 1])
 			dirs[nd++] = 1;
-		if (cy > 0 && !visited[cy-1][cx])
+		if (cy > 0 && !vis[(cy-1) * COLS + cx])
 			dirs[nd++] = 2;
-		if (cy < ROWS-1 && !visited[cy+1][cx])
+		if (cy < ROWS-1 && !vis[(cy+1) * COLS + cx])
 			dirs[nd++] = 3;
 
 		if (nd == 0) {
 			/* Backtrack */
 			sp--;
 			if (sp > 0) {
-				t = stack[sp - 1];
+				t = stk[sp - 1];
 				cx = t % COLS;
 				cy = t / COLS;
 			}
@@ -156,43 +162,42 @@ void generate_maze()
 		case 3: walls[cy][cx] &= ~2; ny++; break;
 		}
 
-		visited[ny][nx] = 1;
+		vis[ny * COLS + nx] = 1;
 		cx = nx; cy = ny;
-		stack[sp++] = cy * COLS + cx;
+		stk[sp++] = cy * COLS + cx;
 	}
 }
 
 void draw_maze()
 {
-	int gr, gc, sr, sc;
-	int is_wall;
+	int gr, gc, sr, sc, w;
+	unsigned char *wm;
 
-	for (gr = 0; gr < 2 * ROWS + 1; gr++) {
-		for (gc = 0; gc < 2 * COLS + 1; gc++) {
+	wm = wallmap;
+	for (gr = 0; gr < EROWS; gr++) {
+		for (gc = 0; gc < ECOLS; gc++) {
 			sr = MAZE_R0 + gr;
 			sc = MAZE_C0 + gc;
-			is_wall = 0;
+			w = 0;
 
 			if (!(gr & 1) && !(gc & 1)) {
-				/* Post — always brick */
-				is_wall = 1;
+				w = 1;
 			}
 			else if (!(gr & 1) && (gc & 1)) {
-				/* Horizontal wall segment */
 				if (gr == 0 || gr == 2 * ROWS)
-					is_wall = 1;
+					w = 1;
 				else if (walls[gr/2 - 1][gc/2] & 2)
-					is_wall = 1;
+					w = 1;
 			}
 			else if ((gr & 1) && !(gc & 1)) {
-				/* Vertical wall segment */
 				if (gc == 0 || gc == 2 * COLS)
-					is_wall = 1;
+					w = 1;
 				else if (walls[gr/2][gc/2 - 1] & 1)
-					is_wall = 1;
+					w = 1;
 			}
 
-			if (is_wall)
+			*wm++ = w;
+			if (w)
 				draw_brick(sr, sc);
 			else
 				set_attr(sr, sc, CORR_ATTR);
@@ -205,8 +210,7 @@ unsigned char spr_dot[8]  = {0x00,0x00,0x38,0x7C,0x7C,0x7C,0x38,0x00};
 unsigned char spr_enemy[8]= {0x00,0x00,0x10,0x28,0x54,0x28,0x10,0x00};
 unsigned char spr_exit[8] = {0x00,0x82,0x44,0x28,0x10,0x28,0x44,0x82};
 
-/* Write an 8-byte bitmap into character cell (sr, sc) and set attr.
-   Clears the cell first so no stale pixels remain. */
+/* Write an 8-byte bitmap into character cell (sr, sc) and set attr. */
 void draw_sprite(unsigned char sr, unsigned char sc,
                  unsigned char *spr, unsigned char attr)
 {
@@ -241,17 +245,17 @@ void clear_cell(unsigned char sr, unsigned char sc)
 
 void draw_dot(int gx, int gy)
 {
-	draw_sprite(IROW(gy), ICOL(gx), spr_dot, PLAYER_ATTR);
+	draw_sprite(SROW(gy), SCOL(gx), spr_dot, PLAYER_ATTR);
 }
 
 void erase_dot(int gx, int gy)
 {
-	clear_cell(IROW(gy), ICOL(gx));
+	clear_cell(SROW(gy), SCOL(gx));
 }
 
 void draw_exit(int gx, int gy)
 {
-	draw_sprite(IROW(gy), ICOL(gx), spr_exit, EXIT_ATTR);
+	draw_sprite(SROW(gy), SCOL(gx), spr_exit, EXIT_ATTR);
 }
 
 void snd_step()
@@ -288,77 +292,70 @@ void snd_win()
 
 void draw_enemy(int gx, int gy)
 {
-	draw_sprite(IROW(gy), ICOL(gx), spr_enemy, ENEMY_ATTR);
+	draw_sprite(SROW(gy), SCOL(gx), spr_enemy, ENEMY_ATTR);
 }
 
 void erase_enemy(int gx, int gy)
 {
-	clear_cell(IROW(gy), ICOL(gx));
+	clear_cell(SROW(gy), SCOL(gx));
 }
 
-/* BFS from enemy to player; returns direction for enemy's next step.
-   Reuses visited[] and stack[] arrays (not needed after maze gen).
+/* BFS from enemy to player on expanded grid.
+   Uses flat indices — no multiply/divide in inner loop.
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 int enemy_bfs()
 {
 	int head, tail;
-	int cx, cy, nx, ny, d, idx;
-	/* parent stores the direction taken TO reach each cell */
-	/* We encode (dir+1) so 0 means unvisited */
-	/* Use visited[] as parent-direction storage */
+	int ci, ni, d;
+	int efi;  /* enemy flat index */
 
-	for (cy = 0; cy < ROWS; cy++)
-		for (cx = 0; cx < COLS; cx++)
-			visited[cy][cx] = 0;
+	for (ci = 0; ci < EROWS * ECOLS; ci++)
+		vis[ci] = 0;
+
+	efi = ey * ECOLS + ex;
 
 	/* BFS from player back to enemy, so we get the first step */
 	head = 0;
 	tail = 0;
-	stack[tail++] = py * COLS + px;
-	visited[py][px] = 5; /* mark as origin */
+	ci = py * ECOLS + px;
+	stk[tail++] = ci;
+	vis[ci] = 5; /* mark as origin */
 
 	while (head < tail) {
-		idx = stack[head++];
-		cx = idx % COLS;
-		cy = idx / COLS;
+		ci = stk[head++];
 
-		if (cx == ex && cy == ey) {
-			/* Trace back: visited[ey][ex] has the dir used to
-			   reach enemy FROM player-side. Reverse it. */
-			d = visited[ey][ex] - 1;
-			/* d is the direction from neighbor to enemy;
-			   enemy should move opposite */
-			if (d == 0) return 1;  /* came from left, go right */
-			if (d == 1) return 0;  /* came from right, go left */
-			if (d == 2) return 3;  /* came from up, go down */
-			if (d == 3) return 2;  /* came from down, go up */
+		if (ci == efi) {
+			d = vis[efi] - 1;
+			if (d == 0) return 1;
+			if (d == 1) return 0;
+			if (d == 2) return 3;
+			if (d == 3) return 2;
 			return -1;
 		}
 
-		/* Try 4 directions: left(0) right(1) up(2) down(3) */
-		/* Left */
-		nx = cx - 1; ny = cy;
-		if (nx >= 0 && !visited[ny][nx] && !(walls[cy][nx] & 1)) {
-			visited[ny][nx] = 1; /* dir 0 + 1 */
-			stack[tail++] = ny * COLS + nx;
+		/* Left: ci - 1 */
+		ni = ci - 1;
+		if (!vis[ni] && !wallmap[ni]) {
+			vis[ni] = 1;
+			stk[tail++] = ni;
 		}
-		/* Right */
-		nx = cx + 1; ny = cy;
-		if (nx < COLS && !visited[ny][nx] && !(walls[cy][cx] & 1)) {
-			visited[ny][nx] = 2; /* dir 1 + 1 */
-			stack[tail++] = ny * COLS + nx;
+		/* Right: ci + 1 */
+		ni = ci + 1;
+		if (!vis[ni] && !wallmap[ni]) {
+			vis[ni] = 2;
+			stk[tail++] = ni;
 		}
-		/* Up */
-		nx = cx; ny = cy - 1;
-		if (ny >= 0 && !visited[ny][nx] && !(walls[ny][cx] & 2)) {
-			visited[ny][nx] = 3; /* dir 2 + 1 */
-			stack[tail++] = ny * COLS + nx;
+		/* Up: ci - ECOLS */
+		ni = ci - ECOLS;
+		if (ni >= 0 && !vis[ni] && !wallmap[ni]) {
+			vis[ni] = 3;
+			stk[tail++] = ni;
 		}
-		/* Down */
-		nx = cx; ny = cy + 1;
-		if (ny < ROWS && !visited[ny][nx] && !(walls[cy][cx] & 2)) {
-			visited[ny][nx] = 4; /* dir 3 + 1 */
-			stack[tail++] = ny * COLS + nx;
+		/* Down: ci + ECOLS */
+		ni = ci + ECOLS;
+		if (ni < EROWS * ECOLS && !vis[ni] && !wallmap[ni]) {
+			vis[ni] = 4;
+			stk[tail++] = ni;
 		}
 	}
 	return -1;
@@ -367,12 +364,14 @@ int enemy_bfs()
 /* Pick a random valid direction from (ex,ey) */
 int enemy_random_dir()
 {
-	int dirs[4], nd, i, j, t;
+	int dirs[4], nd;
+	int fi;
+	fi = ey * ECOLS + ex;
 	nd = 0;
-	if (ex > 0 && !(walls[ey][ex-1] & 1))        dirs[nd++] = 0;
-	if (ex < COLS-1 && !(walls[ey][ex] & 1))      dirs[nd++] = 1;
-	if (ey > 0 && !(walls[ey-1][ex] & 2))         dirs[nd++] = 2;
-	if (ey < ROWS-1 && !(walls[ey][ex] & 2))      dirs[nd++] = 3;
+	if (!wallmap[fi - 1])     dirs[nd++] = 0;
+	if (!wallmap[fi + 1])     dirs[nd++] = 1;
+	if (!wallmap[fi - ECOLS]) dirs[nd++] = 2;
+	if (!wallmap[fi + ECOLS]) dirs[nd++] = 3;
 	if (nd == 0) return -1;
 	return dirs[rng() % nd];
 }
@@ -381,47 +380,39 @@ int enemy_random_dir()
 void move_enemy()
 {
 	int dir;
+	int old_ex, old_ey;
+
 	if (rng() % 2 == 0)
 		dir = enemy_bfs();
 	else
 		dir = enemy_random_dir();
 	if (dir < 0) return;
 
-	{
-		int old_ex = ex, old_ey = ey;
+	old_ex = ex;
+	old_ey = ey;
+	erase_enemy(ex, ey);
 
-		erase_enemy(ex, ey);
+	if (dir == 0) ex--;
+	else if (dir == 1) ex++;
+	else if (dir == 2) ey--;
+	else if (dir == 3) ey++;
 
-		if (dir == 0) ex--;
-		else if (dir == 1) ex++;
-		else if (dir == 2) ey--;
-		else if (dir == 3) ey++;
+	/* Redraw exit/player if enemy was on their cell */
+	if (old_ex == EXIT_GX && old_ey == EXIT_GY)
+		draw_exit(EXIT_GX, EXIT_GY);
+	if (old_ex == px && old_ey == py)
+		draw_dot(px, py);
 
-		/* Redraw exit/player if enemy was on their cell */
-		if (old_ex == COLS - 1 && old_ey == ROWS - 1)
-			draw_exit(COLS - 1, ROWS - 1);
-		if (old_ex == px && old_ey == py)
-			draw_dot(px, py);
-
-		draw_enemy(ex, ey);
-	}
+	draw_enemy(ex, ey);
 }
 
 int can_move(int dx, int dy)
 {
-	int nx = px + dx;
-	int ny = py + dy;
-	if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS)
-		return 0;
-	if (dx == 1)  return !(walls[py][px] & 1);
-	if (dx == -1) return !(walls[py][nx] & 1);
-	if (dy == 1)  return !(walls[py][px] & 2);
-	if (dy == -1) return !(walls[ny][px] & 2);
-	return 0;
+	return !wallmap[(py + dy) * ECOLS + (px + dx)];
 }
 
 /* Enemy move interval — number of main loop ticks between moves */
-#define ENEMY_TICK 800
+#define ENEMY_TICK 600
 
 main()
 {
@@ -456,16 +447,17 @@ main()
 		generate_maze();
 		draw_maze();
 
-		px = 0;
-		py = 0;
-		ex = COLS - 1;
-		ey = 0;
+		/* Positions in expanded grid coords */
+		px = 1;
+		py = 1;
+		ex = 2 * COLS - 1;
+		ey = 1;
 		moves = 0;
 		caught = 0;
 		tick = 0;
 
 		/* Draw exit, enemy, and player */
-		draw_exit(COLS - 1, ROWS - 1);
+		draw_exit(EXIT_GX, EXIT_GY);
 		draw_enemy(ex, ey);
 		draw_dot(px, py);
 
@@ -494,8 +486,8 @@ main()
 					if (px == ex && py == ey)
 						caught = 1;
 
-					if (px == COLS - 1 &&
-					    py == ROWS - 1) {
+					if (px == EXIT_GX &&
+					    py == EXIT_GY) {
 						snd_win();
 						printf("\n\n\n\n\n\n\n\n\n\n\n");
 						printf("\n\n  YOU WIN!");
@@ -522,9 +514,15 @@ main()
 					snd_bump();
 				}
 
-				/* Wait for key release */
+				/* Wait for key release (debounced) */
 #ifdef __HAVE_KEYBOARD
-				while (getk()) ;
+				{
+					unsigned char rel = 0;
+					while (rel < 30) {
+						if (getk()) rel = 0;
+						else rel++;
+					}
+				}
 #endif
 			}
 
