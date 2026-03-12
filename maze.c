@@ -456,8 +456,8 @@ void move_enemy()
 	int fi;
 
 	if ((ex & 1) && (ey & 1)) {
-		/* At maze cell — 75% chase, 25% random */
-		if (rng() % 4 < 3)
+		/* At maze cell — 25% chase, 75% random */
+		if (rng() % 4 == 0)
 			dir = enemy_bfs();
 		else
 			dir = enemy_random_dir();
