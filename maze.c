@@ -613,13 +613,25 @@ void move_enemy(int n)
 	if (old_ex == enx[other] && old_ey == eny[other])
 		draw_sprite(SROW(eny[other]), SCOL(enx[other]), spr_enemy,
 		            (other == 0) ? ENEMY_ATTR : ENEMY2_ATTR);
-	/* Redraw coin if enemy left a coin cell */
+	/* Redraw coin if enemy left a coin cell (coin may still exist
+	   if enemy arrived from a corridor step, not a cell center) */
 	if ((old_ex & 1) && (old_ey & 1)) {
 		int ccx, ccy;
 		ccx = old_ex >> 1;
 		ccy = old_ey >> 1;
 		if (coinmap[ccy * COLS + ccx])
 			draw_coin(ccx, ccy);
+	}
+
+	/* Enemy eats coin if it lands on one */
+	if ((enx[n] & 1) && (eny[n] & 1)) {
+		int ccx, ccy;
+		ccx = enx[n] >> 1;
+		ccy = eny[n] >> 1;
+		if (coinmap[ccy * COLS + ccx]) {
+			coinmap[ccy * COLS + ccx] = 0;
+			coins_left--;
+		}
 	}
 
 	draw_sprite(SROW(eny[n]), SCOL(enx[n]), spr_enemy, attr);
