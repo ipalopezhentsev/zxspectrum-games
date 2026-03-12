@@ -31,6 +31,10 @@
 	(16384u + ((unsigned int)((sr) >> 3) << 11) \
 	 + ((unsigned int)((sr) & 7) << 5) + (sc))
 
+/* Pointer goto next 8x8 screen row (increment only high byte).
+   This avoids a full 16-bit add in tight sprite draw loops. */
+#define SC_NEXT_LINE(p) (((unsigned char *)&p)[1]++)
+
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
 /* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
@@ -143,7 +147,7 @@ void draw_brick(unsigned char sr, unsigned char sc)
 	base = (unsigned char *)SCR_ADDR(sr, sc);
 	for (i = 0; i < 8; i++) {
 		*base = brick[i];
-		base += 256;
+		SC_NEXT_LINE(base);
 	}
 	set_attr(sr, sc, WALL_ATTR);
 }
@@ -271,15 +275,15 @@ void draw_maze()
 
 			if (!(gr & 1) && !(gc & 1)) {
 				/* Border posts are always walls */
-				if (gr == 0 || gr == 2*ROWS ||
-				    gc == 0 || gc == 2*COLS) {
+				if (gr == 0 || gr == (ROWS << 1) ||
+				    gc == 0 || gc == (COLS << 1)) {
 					w = 1;
 				} else {
 					/* Interior corner post: wall only if
 					   any adjacent wall segment exists */
 					int cy, cx;
-					cy = gr / 2;
-					cx = gc / 2;
+					cy = gr >> 1;
+					cx = gc >> 1;
 					if ((walls[cy-1][cx-1] & 1) ||
 					    (walls[cy][cx-1] & 1) ||
 					    (walls[cy-1][cx-1] & 2) ||
@@ -288,15 +292,15 @@ void draw_maze()
 				}
 			}
 			else if (!(gr & 1) && (gc & 1)) {
-				if (gr == 0 || gr == 2 * ROWS)
+				if (gr == 0 || gr == (ROWS << 1))
 					w = 1;
-				else if (walls[gr/2 - 1][gc/2] & 2)
+				else if (walls[(gr >> 1) - 1][gc >> 1] & 2)
 					w = 1;
 			}
 			else if ((gr & 1) && !(gc & 1)) {
-				if (gc == 0 || gc == 2 * COLS)
+				if (gc == 0 || gc == (COLS << 1))
 					w = 1;
-				else if (walls[gr/2][gc/2 - 1] & 1)
+				else if (walls[gr >> 1][(gc >> 1) - 1] & 1)
 					w = 1;
 			}
 
@@ -318,21 +322,23 @@ void draw_sprite(unsigned char sr, unsigned char sc,
 	base = (unsigned char *)SCR_ADDR(sr, sc);
 	for (i = 0; i < 8; i++) {
 		*base = spr[i];
-		base += 256;
+		SC_NEXT_LINE(base);
 	}
 	set_attr(sr, sc, attr);
 }
 
-/* Clear a character cell (pixels + attribute) */
+/* Clear a character cell (just attribute) */
 void clear_cell(unsigned char sr, unsigned char sc)
 {
-	unsigned char *base;
-	unsigned char i;
-	base = (unsigned char *)SCR_ADDR(sr, sc);
-	for (i = 0; i < 8; i++) {
-		*base = 0;
-		base += 256;
-	}
+	//we don't clear pixels because attribute change is enough to make them invisible, 
+	//and clearing pixels causes slowdown
+	//unsigned char *base;
+	//unsigned char i;
+	//base = (unsigned char *)SCR_ADDR(sr, sc);
+	// for (i = 0; i < 8; i++) {
+	// 	*base = 0;
+	// 	base += 256;
+	// }
 	set_attr(sr, sc, CORR_ATTR);
 }
 
@@ -441,8 +447,9 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
 	cx = gx >> 1;
 	cy = gy >> 1;
-	if (coinmap[(unsigned int)cy * COLS + cx]) {
-		coinmap[(unsigned int)cy * COLS + cx] = 0;
+	int idx=(unsigned int)cy * COLS + cx;
+	if (coinmap[idx]) {
+		coinmap[idx] = 0;
 		coins_left--;
 		score += 10;
 		return 1;
@@ -595,10 +602,9 @@ int enemy_bfs(int exx, int eyy)
 /* Pick a random valid direction from (exx,eyy) on expanded grid */
 int enemy_random_dir(int exx, int eyy)
 {
-	int dirs[4], nd;
-	int fi;
-	fi = eyy * ECOLS + exx;
-	nd = 0;
+	int dirs[4];
+	int fi = eyy * ECOLS + exx;
+	int nd = 0;
 	if (!wallmap[fi - 1])     dirs[nd++] = 0;
 	if (!wallmap[fi + 1])     dirs[nd++] = 1;
 	if (!wallmap[fi - ECOLS]) dirs[nd++] = 2;
@@ -710,13 +716,13 @@ void draw_popup_bg(int border_attr, int inner_attr)
 			if (r == 10 || r == 14 || c == 5 || c == 26) {
 				for (i = 0; i < 8; i++) {
 					*base = brick[i];
-					base += 256;
+					SC_NEXT_LINE(base);
 				}
 				set_attr(r, c, border_attr);
 			} else {
 				for (i = 0; i < 8; i++) {
 					*base = 0;
-					base += 256;
+					SC_NEXT_LINE(base);
 				}
 				set_attr(r, c, inner_attr);
 			}
@@ -804,14 +810,17 @@ main()
 
 		/* Seed RNG from keypress timing */
 		rseed = 0;
-		while (!getk())
+		//simple getk() always leads to 42
+		while (!getk_inkey())
 			rseed++;
 		while (getk()) ;
+		//TODO: after first win second level always starts with 42
 		if (rseed == 0) rseed = 42;
 
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
+		printf("rseed: %d", rseed);
 		int len = sprintf(txt_buffer, "MAZE Level %d  O/P/Q/A", level);
 		gotoxy(center_x(len), 23); printf(txt_buffer);
 
