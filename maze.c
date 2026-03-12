@@ -50,8 +50,8 @@ unsigned char level;
 int hiscores[NUM_HISCORES];
 unsigned char hilevel[NUM_HISCORES];
 
-/* Buffer for formatting popup text */
-char popup_buf[22];
+/* Buffer for formatting text */
+char txt_buffer[TEXT_SCR_WIDTH + 1];
 
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
@@ -445,9 +445,8 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 /* Display score on the title row */
 void show_score()
 {
-	char buffer[14];
-	int len = sprintf(buffer, "SCORE: %06d", score);
-	gotoxy(center_x(len), 22); printf(buffer);
+	int len = sprintf(txt_buffer, "SCORE: %06d", score);
+	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
 
 /* Update high scores table, return rank (0-based) or -1 */
@@ -477,9 +476,8 @@ void show_hiscores(char rank)
 
 	clear_pixels();
 	zx_cls_attr(PAPER_BLACK | INK_WHITE);
-	char buffer[20];
-	int len = sprintf(buffer, "-= HIGH SCORES =-");
-	gotoxy(center_x(len), 1); printf(buffer);
+	int len = sprintf(txt_buffer, "-= HIGH SCORES =-");
+	gotoxy(center_x(len), 1); printf(txt_buffer);
 
 	for (i = 0; i < NUM_HISCORES; i++) {
 		r = 3 + (i << 1);
@@ -746,13 +744,12 @@ void win_cut_scene()
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_GREEN;
 	
-	char buffer[30];
-	int len = sprintf(buffer, "** ESCAPED! **");
-	gotoxy(center_x(len), 11); printf(buffer);
-	len = sprintf(buffer, "Score: %d", score);
-	gotoxy(center_x(len), 12); printf(buffer);
-	len = sprintf(buffer, "Any key - next level");
-	gotoxy(center_x(len), 13); printf(buffer);
+	int len = sprintf(txt_buffer, "** ESCAPED! **");
+	gotoxy(center_x(len), 11); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Score: %d", score);
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Any key - next level");
+	gotoxy(center_x(len), 13); printf(txt_buffer);
 	popup_fix_attrs(BRIGHT | INK_BLACK | PAPER_GREEN);
 }
 
@@ -766,13 +763,12 @@ void game_over_cut_scene()
 		BRIGHT | INK_WHITE  | PAPER_RED);
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_RED;
-	char buffer[30];
-	int len = sprintf(buffer, "** CAUGHT! **");
-	gotoxy(center_x(len), 11); printf(buffer);
-	len = sprintf(buffer, "Score: %d", score);
-	gotoxy(center_x(len), 12); printf(buffer);
-	len = sprintf(buffer, "Press any key...");
-	gotoxy(center_x(len), 13); printf(buffer);
+	int len = sprintf(txt_buffer, "** CAUGHT! **");
+	gotoxy(center_x(len), 11); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Score: %d", score);
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Press any key...");
+	gotoxy(center_x(len), 13); printf(txt_buffer);
 	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
 }
 
@@ -808,9 +804,8 @@ main()
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
-		char buffer[40];
-		int len = sprintf(buffer, "MAZE Level %d  O/P/Q/A", level);
-		gotoxy(center_x(len), 23); printf(buffer);
+		int len = sprintf(txt_buffer, "MAZE Level %d  O/P/Q/A", level);
+		gotoxy(center_x(len), 23); printf(txt_buffer);
 
 		generate_maze();
 		add_extra_passages();

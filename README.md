@@ -36,3 +36,13 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 | **Target** | ZX Spectrum 48K (`+zx`) |
 | **Language** | C (z88dk dialect, C89 subset) |
 | **Output** | `.TAP` tape image |
+
+
+## TODO
+
+- add more entropy to levels
+- randomize exit
+- introduce complexity level for a maze and increase it
+- speed up enemies with level?
+- introduce asm inserts in inner loops?
+- 
