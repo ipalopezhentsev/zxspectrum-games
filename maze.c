@@ -28,7 +28,8 @@ unsigned char walls[ROWS][COLS];
 /* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
 unsigned char wallmap[EROWS * ECOLS];
 int px, py;    /* player position as flat index into expanded grid */
-int ex, ey;    /* enemy position as flat index into expanded grid */
+int enx[2], eny[2];    /* enemy positions in expanded grid */
+int last_edir_arr[2];  /* last direction each enemy moved */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
@@ -47,6 +48,7 @@ int hilevel[NUM_HISCORES];
 #define CORR_ATTR   (INK_BLACK | PAPER_BLACK)
 #define PLAYER_ATTR (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
+#define ENEMY2_ATTR (BRIGHT | INK_MAGENTA | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
@@ -373,20 +375,23 @@ void draw_coin(int cx, int cy)
 	draw_sprite(SROW(gy), SCOL(gx), spr_coin, COIN_ATTR);
 }
 
-/* Place coins on ~40% of maze cells, avoiding start/exit/enemy */
+/* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
 void place_coins()
 {
-	int cx, cy, i;
+	int cx, cy, i, gx, gy;
 	coins_left = 0;
 	for (i = 0; i < ROWS * COLS; i++)
 		coinmap[i] = 0;
 
 	for (cy = 0; cy < ROWS; cy++)
 		for (cx = 0; cx < COLS; cx++) {
-			/* Skip player start (0,0), exit cell, enemy start */
-			if (cx == 0 && cy == 0) continue;
-			if (cx == COLS-1 && cy == ROWS-1) continue;
-			if (cx == COLS-1 && cy == 0) continue;
+			gx = cx * 2 + 1;
+			gy = cy * 2 + 1;
+			/* Skip player, exit, enemies */
+			if (gx == px && gy == py) continue;
+			if (gx == EXIT_GX && gy == EXIT_GY) continue;
+			if (gx == enx[0] && gy == eny[0]) continue;
+			if (gx == enx[1] && gy == eny[1]) continue;
 			if (rng() % 5 < 2) {
 				coinmap[cy * COLS + cx] = 1;
 				coins_left++;
@@ -489,7 +494,7 @@ void show_hiscores(int rank)
 
 /* BFS on maze cell grid (14x9=126 cells instead of 29x19=551).
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
-int enemy_bfs()
+int enemy_bfs(int exx, int eyy)
 {
 	int head, tail;
 	int ci, ni;
@@ -499,7 +504,7 @@ int enemy_bfs()
 	unsigned char d;
 
 	/* Convert expanded grid to maze cell coords (only valid at odd pos) */
-	ecx = ex >> 1;  ecy = ey >> 1;
+	ecx = exx >> 1;  ecy = eyy >> 1;
 	pcx = px >> 1;  pcy = py >> 1;
 
 	efi = ecy * COLS + ecx;
@@ -569,18 +574,12 @@ int enemy_bfs()
 	return -1;
 }
 
-/* Last direction the enemy moved (for corridor continuation) */
-int last_edir;
-/* Cached BFS direction and remaining uses */
-int cached_dir;
-int cached_steps;
-
-/* Pick a random valid direction from (ex,ey) on expanded grid */
-int enemy_random_dir()
+/* Pick a random valid direction from (exx,eyy) on expanded grid */
+int enemy_random_dir(int exx, int eyy)
 {
 	int dirs[4], nd;
 	int fi;
-	fi = ey * ECOLS + ex;
+	fi = eyy * ECOLS + exx;
 	nd = 0;
 	if (!wallmap[fi - 1])     dirs[nd++] = 0;
 	if (!wallmap[fi + 1])     dirs[nd++] = 1;
@@ -590,42 +589,49 @@ int enemy_random_dir()
 	return dirs[rng() % nd];
 }
 
-/* Move enemy one step.
+/* Move enemy n (0 or 1) one step.
    At odd position (maze cell): use cached BFS, recalc, or random.
    At even position (corridor): continue in same direction. */
-void move_enemy()
+void move_enemy(int n)
 {
 	int dir;
 	int old_ex, old_ey;
-	int fi;
+	int other;
+	unsigned char attr;
 
-	if ((ex & 1) && (ey & 1)) {
+	old_ex = enx[n];
+	old_ey = eny[n];
+	attr = (n == 0) ? ENEMY_ATTR : ENEMY2_ATTR;
+
+	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — 25% chase, 75% random */
 		if (rng() % 4 == 0)
-			dir = enemy_bfs();
+			dir = enemy_bfs(old_ex, old_ey);
 		else
-			dir = enemy_random_dir();
+			dir = enemy_random_dir(old_ex, old_ey);
 	} else {
 		/* In corridor between cells — keep going */
-		dir = last_edir;
+		dir = last_edir_arr[n];
 	}
 	if (dir < 0) return;
-	last_edir = dir;
+	last_edir_arr[n] = dir;
 
-	old_ex = ex;
-	old_ey = ey;
-	erase_enemy(ex, ey);
+	erase_enemy(old_ex, old_ey);
 
-	if (dir == 0) ex--;
-	else if (dir == 1) ex++;
-	else if (dir == 2) ey--;
-	else if (dir == 3) ey++;
+	if (dir == 0) enx[n]--;
+	else if (dir == 1) enx[n]++;
+	else if (dir == 2) eny[n]--;
+	else if (dir == 3) eny[n]++;
 
-	/* Redraw exit/player/coin if enemy was on their cell */
+	/* Redraw exit/player/coin/other enemy if this enemy left their cell */
 	if (old_ex == EXIT_GX && old_ey == EXIT_GY)
 		draw_exit(EXIT_GX, EXIT_GY);
 	if (old_ex == px && old_ey == py)
 		draw_dot(px, py);
+	other = 1 - n;
+	if (old_ex == enx[other] && old_ey == eny[other])
+		draw_sprite(SROW(eny[other]), SCOL(enx[other]), spr_enemy,
+		            (other == 0) ? ENEMY_ATTR : ENEMY2_ATTR);
 	/* Redraw coin if enemy left a coin cell */
 	if ((old_ex & 1) && (old_ey & 1)) {
 		int ccx, ccy;
@@ -635,7 +641,24 @@ void move_enemy()
 			draw_coin(ccx, ccy);
 	}
 
-	draw_enemy(ex, ey);
+	draw_sprite(SROW(eny[n]), SCOL(enx[n]), spr_enemy, attr);
+}
+
+/* Pick a random maze cell center in expanded grid, avoiding
+   positions already used. ox1,oy1,ox2,oy2 = positions to avoid
+   (-1 means ignore). */
+void random_start(int *gx, int *gy,
+                  int ox1, int oy1, int ox2, int oy2)
+{
+	int cx, cy;
+	do {
+		cx = rng() % COLS;
+		cy = rng() % ROWS;
+		*gx = cx * 2 + 1;
+		*gy = cy * 2 + 1;
+	} while ((*gx == ox1 && *gy == oy1) ||
+	         (*gx == ox2 && *gy == oy2) ||
+	         (*gx == EXIT_GX && *gy == EXIT_GY));
 }
 
 int can_move(int dx, int dy)
@@ -690,21 +713,21 @@ main()
 		add_extra_passages();
 		draw_maze();
 
-		/* Positions in expanded grid coords */
-		px = 1;
-		py = 1;
-		ex = 2 * COLS - 1;
-		ey = 1;
+		/* Random starting positions */
+		random_start(&px, &py, -1, -1, -1, -1);
+		random_start(&enx[0], &eny[0], px, py, -1, -1);
+		random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
 		moves = 0;
 		caught = 0;
 		tick = 0;
-		last_edir = 0;
-		cached_steps = 0;
+		last_edir_arr[0] = 0;
+		last_edir_arr[1] = 0;
 
 		/* Place coins and draw everything */
 		place_coins();
 		draw_exit(EXIT_GX, EXIT_GY);
-		draw_enemy(ex, ey);
+		draw_sprite(SROW(eny[0]), SCOL(enx[0]), spr_enemy, ENEMY_ATTR);
+		draw_sprite(SROW(eny[1]), SCOL(enx[1]), spr_enemy, ENEMY2_ATTR);
 		draw_dot(px, py);
 		show_score();
 
@@ -736,7 +759,8 @@ main()
 					}
 
 					/* Player walked onto enemy? */
-					if (px == ex && py == ey)
+					if ((px == enx[0] && py == eny[0]) ||
+					    (px == enx[1] && py == eny[1]))
 						caught = 1;
 
 					if (px == EXIT_GX &&
@@ -779,9 +803,11 @@ main()
 			tick++;
 			if (tick >= ENEMY_TICK) {
 				tick = 0;
-				move_enemy();
+				move_enemy(0);
+				move_enemy(1);
 
-				if (ex == px && ey == py)
+				if ((enx[0] == px && eny[0] == py) ||
+				    (enx[1] == px && eny[1] == py))
 					caught = 1;
 			}
 
