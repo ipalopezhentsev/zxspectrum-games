@@ -66,8 +66,20 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 4. To recolour a cell after an object leaves: poke the attribute byte directly, don't redraw everything
 5. **Never bulk-recolour the screen on every frame** — only update the 1-2 cells that changed
 
+### Preferred: direct screen memory writes for sprites
+- `plot()`/`unplot()` use the ROM PLOT routine which depends on ATTR_P, MASK_P, and P_FLAG system variables — these can get into bad states and cause pixel/attribute corruption
+- **For moving sprites, write pre-computed 8-byte bitmaps directly to screen memory** instead of using `plot()`/`unplot()`. This is faster and avoids ROM side effects
+- Pattern: define sprite as `unsigned char spr[8] = {...};`, then write each byte to screen address + i*256 for i=0..7, and set the attribute with a direct poke to attribute memory
+- When erasing a sprite, zero all 8 pixel lines of the cell and set the attribute to the background colour — don't use `unplot()` per-pixel
+- `zx_cls_attr()` only clears attribute memory, **not pixel data**. To fully clear the screen between games, also zero the 6144 bytes at address 16384
+
+### Sprite overlap rules
+- When erasing a sprite from a cell, check if another sprite (exit marker, player, etc.) shares that cell and redraw it after erasing
+- Always check for player/enemy collision both after the player moves AND after the enemy moves
+
 ### Known issues
 - UDG characters (codes 144+) do **not** render through z88dk's `printf` — it bypasses the ROM. Don't use `printf("%c", 144)` etc. for custom graphics.
 - `draw()` for long lines may render at unexpected positions. Prefer `plot()` loops for reliable horizontal/vertical lines. Short `draw()` calls (a few pixels) work fine.
 - `drawb()` reliably renders box outlines at correct positions.
 - Text-based separators (`---`) are more reliable than pixel separator lines.
+- `plot()`/`unplot()` can corrupt pixel data and attributes unpredictably — prefer direct screen memory writes for game sprites (see above)

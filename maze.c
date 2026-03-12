@@ -17,6 +17,7 @@
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
 int px, py;
+int ex, ey;  /* enemy position */
 unsigned int rseed;
 
 #define ATTR_BASE   22528
@@ -24,6 +25,7 @@ unsigned int rseed;
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
 #define CORR_ATTR   (INK_BLACK | PAPER_BLACK)
 #define PLAYER_ATTR (BRIGHT | INK_GREEN | PAPER_BLACK)
+#define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
@@ -65,6 +67,16 @@ void draw_brick(unsigned char sr, unsigned char sc)
 		base += 256;
 	}
 	set_attr(sr, sc, WALL_ATTR);
+}
+
+/* Clear all pixel data (6144 bytes at 16384) */
+void clear_pixels()
+{
+	unsigned char *p;
+	unsigned int i;
+	p = (unsigned char *)16384u;
+	for (i = 0; i < 6144u; i++)
+		*p++ = 0;
 }
 
 /* Colour the title row */
@@ -188,38 +200,58 @@ void draw_maze()
 	}
 }
 
+/* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
+unsigned char spr_dot[8]  = {0x00,0x00,0x38,0x7C,0x7C,0x7C,0x38,0x00};
+unsigned char spr_enemy[8]= {0x00,0x00,0x10,0x28,0x54,0x28,0x10,0x00};
+unsigned char spr_exit[8] = {0x00,0x82,0x44,0x28,0x10,0x28,0x44,0x82};
+
+/* Write an 8-byte bitmap into character cell (sr, sc) and set attr.
+   Clears the cell first so no stale pixels remain. */
+void draw_sprite(unsigned char sr, unsigned char sc,
+                 unsigned char *spr, unsigned char attr)
+{
+	unsigned char *base;
+	unsigned char i;
+	unsigned int addr;
+	addr = 16384u + ((unsigned int)(sr >> 3) << 11)
+	     + ((unsigned int)(sr & 7) << 5) + sc;
+	base = (unsigned char *)addr;
+	for (i = 0; i < 8; i++) {
+		*base = spr[i];
+		base += 256;
+	}
+	set_attr(sr, sc, attr);
+}
+
+/* Clear a character cell (pixels + attribute) */
+void clear_cell(unsigned char sr, unsigned char sc)
+{
+	unsigned char *base;
+	unsigned char i;
+	unsigned int addr;
+	addr = 16384u + ((unsigned int)(sr >> 3) << 11)
+	     + ((unsigned int)(sr & 7) << 5) + sc;
+	base = (unsigned char *)addr;
+	for (i = 0; i < 8; i++) {
+		*base = 0;
+		base += 256;
+	}
+	set_attr(sr, sc, CORR_ATTR);
+}
+
 void draw_dot(int gx, int gy)
 {
-	int dx, dy;
-	int pcx = ICX(gx);
-	int pcy = ICY(gy);
-	for (dy = -2; dy <= 2; dy++)
-		for (dx = -2; dx <= 2; dx++)
-			if (dx * dx + dy * dy <= 5)
-				plot(pcx + dx, pcy + dy);
+	draw_sprite(IROW(gy), ICOL(gx), spr_dot, PLAYER_ATTR);
 }
 
 void erase_dot(int gx, int gy)
 {
-	int dx, dy;
-	int pcx = ICX(gx);
-	int pcy = ICY(gy);
-	for (dy = -2; dy <= 2; dy++)
-		for (dx = -2; dx <= 2; dx++)
-			if (dx * dx + dy * dy <= 5)
-				unplot(pcx + dx, pcy + dy);
+	clear_cell(IROW(gy), ICOL(gx));
 }
 
-/* Draw X marker for the exit — radius 3 to fit interior cell */
 void draw_exit(int gx, int gy)
 {
-	int i;
-	int pcx = ICX(gx);
-	int pcy = ICY(gy);
-	for (i = -3; i <= 3; i++) {
-		plot(pcx + i, pcy + i);
-		plot(pcx + i, pcy - i);
-	}
+	draw_sprite(IROW(gy), ICOL(gx), spr_exit, EXIT_ATTR);
 }
 
 void snd_step()
@@ -234,6 +266,16 @@ void snd_bump()
 	intrinsic_ei();
 }
 
+void snd_caught()
+{
+	bit_beep(20, 600);
+	intrinsic_ei();
+	bit_beep(20, 700);
+	intrinsic_ei();
+	bit_beep(40, 900);
+	intrinsic_ei();
+}
+
 void snd_win()
 {
 	bit_beep(15, 150);
@@ -242,6 +284,127 @@ void snd_win()
 	intrinsic_ei();
 	bit_beep(30, 80);
 	intrinsic_ei();
+}
+
+void draw_enemy(int gx, int gy)
+{
+	draw_sprite(IROW(gy), ICOL(gx), spr_enemy, ENEMY_ATTR);
+}
+
+void erase_enemy(int gx, int gy)
+{
+	clear_cell(IROW(gy), ICOL(gx));
+}
+
+/* BFS from enemy to player; returns direction for enemy's next step.
+   Reuses visited[] and stack[] arrays (not needed after maze gen).
+   Returns: 0=left,1=right,2=up,3=down, -1=no path */
+int enemy_bfs()
+{
+	int head, tail;
+	int cx, cy, nx, ny, d, idx;
+	/* parent stores the direction taken TO reach each cell */
+	/* We encode (dir+1) so 0 means unvisited */
+	/* Use visited[] as parent-direction storage */
+
+	for (cy = 0; cy < ROWS; cy++)
+		for (cx = 0; cx < COLS; cx++)
+			visited[cy][cx] = 0;
+
+	/* BFS from player back to enemy, so we get the first step */
+	head = 0;
+	tail = 0;
+	stack[tail++] = py * COLS + px;
+	visited[py][px] = 5; /* mark as origin */
+
+	while (head < tail) {
+		idx = stack[head++];
+		cx = idx % COLS;
+		cy = idx / COLS;
+
+		if (cx == ex && cy == ey) {
+			/* Trace back: visited[ey][ex] has the dir used to
+			   reach enemy FROM player-side. Reverse it. */
+			d = visited[ey][ex] - 1;
+			/* d is the direction from neighbor to enemy;
+			   enemy should move opposite */
+			if (d == 0) return 1;  /* came from left, go right */
+			if (d == 1) return 0;  /* came from right, go left */
+			if (d == 2) return 3;  /* came from up, go down */
+			if (d == 3) return 2;  /* came from down, go up */
+			return -1;
+		}
+
+		/* Try 4 directions: left(0) right(1) up(2) down(3) */
+		/* Left */
+		nx = cx - 1; ny = cy;
+		if (nx >= 0 && !visited[ny][nx] && !(walls[cy][nx] & 1)) {
+			visited[ny][nx] = 1; /* dir 0 + 1 */
+			stack[tail++] = ny * COLS + nx;
+		}
+		/* Right */
+		nx = cx + 1; ny = cy;
+		if (nx < COLS && !visited[ny][nx] && !(walls[cy][cx] & 1)) {
+			visited[ny][nx] = 2; /* dir 1 + 1 */
+			stack[tail++] = ny * COLS + nx;
+		}
+		/* Up */
+		nx = cx; ny = cy - 1;
+		if (ny >= 0 && !visited[ny][nx] && !(walls[ny][cx] & 2)) {
+			visited[ny][nx] = 3; /* dir 2 + 1 */
+			stack[tail++] = ny * COLS + nx;
+		}
+		/* Down */
+		nx = cx; ny = cy + 1;
+		if (ny < ROWS && !visited[ny][nx] && !(walls[cy][cx] & 2)) {
+			visited[ny][nx] = 4; /* dir 3 + 1 */
+			stack[tail++] = ny * COLS + nx;
+		}
+	}
+	return -1;
+}
+
+/* Pick a random valid direction from (ex,ey) */
+int enemy_random_dir()
+{
+	int dirs[4], nd, i, j, t;
+	nd = 0;
+	if (ex > 0 && !(walls[ey][ex-1] & 1))        dirs[nd++] = 0;
+	if (ex < COLS-1 && !(walls[ey][ex] & 1))      dirs[nd++] = 1;
+	if (ey > 0 && !(walls[ey-1][ex] & 2))         dirs[nd++] = 2;
+	if (ey < ROWS-1 && !(walls[ey][ex] & 2))      dirs[nd++] = 3;
+	if (nd == 0) return -1;
+	return dirs[rng() % nd];
+}
+
+/* Move enemy one step — 50% chance to chase, 50% random wander */
+void move_enemy()
+{
+	int dir;
+	if (rng() % 2 == 0)
+		dir = enemy_bfs();
+	else
+		dir = enemy_random_dir();
+	if (dir < 0) return;
+
+	{
+		int old_ex = ex, old_ey = ey;
+
+		erase_enemy(ex, ey);
+
+		if (dir == 0) ex--;
+		else if (dir == 1) ex++;
+		else if (dir == 2) ey--;
+		else if (dir == 3) ey++;
+
+		/* Redraw exit/player if enemy was on their cell */
+		if (old_ex == COLS - 1 && old_ey == ROWS - 1)
+			draw_exit(COLS - 1, ROWS - 1);
+		if (old_ex == px && old_ey == py)
+			draw_dot(px, py);
+
+		draw_enemy(ex, ey);
+	}
 }
 
 int can_move(int dx, int dy)
@@ -257,15 +420,21 @@ int can_move(int dx, int dy)
 	return 0;
 }
 
+/* Enemy move interval — number of main loop ticks between moves */
+#define ENEMY_TICK 800
+
 main()
 {
 	char k;
 	int dx, dy;
 	int moves;
+	int caught;
+	unsigned int tick;
 
 	while (1) {
 		zx_border(INK_BLUE);
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
+		clear_pixels();
 		printf("     -= MAZE GAME =-\n");
 		printf(" Press any key to start...");
 		colour_title();
@@ -280,6 +449,7 @@ main()
 		if (rseed == 0) rseed = 42;
 
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
+		clear_pixels();
 		printf("  MAZE  O/P/Q/A=move\n");
 		colour_title();
 
@@ -288,16 +458,16 @@ main()
 
 		px = 0;
 		py = 0;
+		ex = COLS - 1;
+		ey = 0;
 		moves = 0;
+		caught = 0;
+		tick = 0;
 
-		/* Draw exit and player in their corridor cells */
-		*((unsigned char *)ATTR_P_ADDR) = EXIT_ATTR;
+		/* Draw exit, enemy, and player */
 		draw_exit(COLS - 1, ROWS - 1);
-
-		*((unsigned char *)ATTR_P_ADDR) = PLAYER_ATTR;
+		draw_enemy(ex, ey);
 		draw_dot(px, py);
-
-		*((unsigned char *)ATTR_P_ADDR) = CORR_ATTR;
 
 		while (1) {
 #ifdef __HAVE_KEYBOARD
@@ -315,16 +485,14 @@ main()
 			if (dx || dy) {
 				if (can_move(dx, dy)) {
 					erase_dot(px, py);
-					set_attr(IROW(py), ICOL(px),
-					         CORR_ATTR);
 					px += dx;
 					py += dy;
 					moves++;
-					*((unsigned char *)ATTR_P_ADDR) =
-						PLAYER_ATTR;
 					draw_dot(px, py);
-					*((unsigned char *)ATTR_P_ADDR) =
-						CORR_ATTR;
+
+					/* Player walked onto enemy? */
+					if (px == ex && py == ey)
+						caught = 1;
 
 					if (px == COLS - 1 &&
 					    py == ROWS - 1) {
@@ -333,7 +501,6 @@ main()
 						printf("\n\n  YOU WIN!");
 						printf(" Moves: %d\n", moves);
 						printf("  Any key=new maze");
-						/* Colour win text area */
 						{
 							int wr;
 							for (wr = 13; wr <= 16; wr++) {
@@ -349,6 +516,8 @@ main()
 					}
 
 					snd_step();
+					tick = 0; /* reset tick so enemy doesn't
+					             move right after player */
 				} else {
 					snd_bump();
 				}
@@ -357,6 +526,38 @@ main()
 #ifdef __HAVE_KEYBOARD
 				while (getk()) ;
 #endif
+			}
+
+			/* Enemy moves on its own timer */
+			tick++;
+			if (tick >= ENEMY_TICK) {
+				tick = 0;
+				move_enemy();
+
+				if (ex == px && ey == py)
+					caught = 1;
+			}
+
+			if (caught) {
+				snd_caught();
+				printf("\n\n\n\n\n\n\n\n\n\n\n");
+				printf("\n\n  CAUGHT!");
+				printf(" Moves: %d\n", moves);
+				printf("  Any key=new maze");
+				{
+					int wr;
+					for (wr = 13; wr <= 16; wr++) {
+						int wc;
+						for (wc = 0; wc < 32; wc++)
+							set_attr(wr, wc,
+							  BRIGHT | INK_RED |
+							  PAPER_BLACK);
+					}
+				}
+#ifdef __HAVE_KEYBOARD
+				fgetc_cons();
+#endif
+				break;
 			}
 		}
 	}
