@@ -260,7 +260,7 @@ void draw_exit(int gx, int gy)
 
 void snd_step()
 {
-	bit_beep(1, 200);
+	bit_beep(1, 400);
 	intrinsic_ei();
 }
 
@@ -514,15 +514,9 @@ main()
 					snd_bump();
 				}
 
-				/* Wait for key release (debounced) */
+				/* Wait for key release */
 #ifdef __HAVE_KEYBOARD
-				{
-					unsigned char rel = 0;
-					while (rel < 30) {
-						if (getk()) rel = 0;
-						else rel++;
-					}
-				}
+				while (getk()) ;
 #endif
 			}
 
