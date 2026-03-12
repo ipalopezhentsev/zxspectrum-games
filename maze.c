@@ -72,8 +72,8 @@ char popup_buf[22];
 
 /* Brick pattern: red ink on yellow paper */
 unsigned char brick[8] = {
-	0xF7, 0xF7, 0xF7, 0x00,
-	0xDF, 0xDF, 0xDF, 0x00
+	0b11110111, 0b11110111, 0b11110111, 0b00000000,
+	0b11011111, 0b11011111, 0b11011111, 0b00000000
 };
 
 /* Set attribute for character cell (row, col) */
@@ -102,14 +102,6 @@ void draw_brick(unsigned char sr, unsigned char sc)
 void clear_pixels()
 {
 	memset((unsigned char *)16384u, 0, 6144u);
-}
-
-/* Colour the title row */
-void colour_title()
-{
-	unsigned char c;
-	for (c = 0; c < 32; c++)
-		set_attr(0, c, TITLE_ATTR);
 }
 
 unsigned int rng()
@@ -268,10 +260,47 @@ void draw_maze()
 }
 
 /* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
-unsigned char spr_dot[8]  = {0x00,0x00,0x38,0x7C,0x7C,0x7C,0x38,0x00};
-unsigned char spr_enemy[8]= {0x00,0x00,0x10,0x28,0x54,0x28,0x10,0x00};
-unsigned char spr_exit[8] = {0x00,0x82,0x44,0x28,0x10,0x28,0x44,0x82};
-unsigned char spr_coin[8] = {0x00,0x3C,0x7E,0x7E,0x3C,0x3C,0x18,0x00};
+//don't remove formatting and binary constants, it's more readable this way
+unsigned char spr_dot[8]  = {
+	0b00000000,
+	0b00000000,
+	0b00111000,
+	0b01111100,
+	0b01111100,
+	0b01111100,
+	0b00111000,
+	0b00000000
+};
+unsigned char spr_enemy[8]= {
+	0b00000000,
+	0b00000000,
+	0b00010000,
+	0b00101000,
+	0b01010100,
+	0b00101000,
+	0b00010000,
+	0b00000000
+};
+unsigned char spr_exit[8] = {
+	0b00000000,
+	0b10000010,
+	0b01000100,
+	0b00101000,
+	0b00010000,
+	0b00101000,
+	0b01000100,
+	0b10000010
+};
+unsigned char spr_coin[8] = {
+	0b00000000,
+	0b00111100,
+	0b01111110,
+	0b01111110,
+	0b00111100,
+	0b00111100,
+	0b00011000,
+	0b00000000
+};
 
 /* Write an 8-byte bitmap into character cell (sr, sc) and set attr. */
 void draw_sprite(unsigned char sr, unsigned char sc,
@@ -416,11 +445,9 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 /* Display score on the title row */
 void show_score()
 {
-	int c;
-	gotoxy(18, 0);
-	printf("S:%04d", score);
-	for (c = 18; c < 24; c++)
-		set_attr(0, c, TITLE_ATTR);
+	char buffer[14];
+	int len = sprintf(buffer, "SCORE: %06d", score);
+	gotoxy(center_x(len), 22); printf(buffer);
 }
 
 /* Update high scores table, return rank (0-based) or -1 */
@@ -449,9 +476,10 @@ void show_hiscores(char rank)
 	unsigned char attr;
 
 	clear_pixels();
-	zx_cls_attr(PAPER_BLACK | INK_BLACK);
-	colour_title();
-	printf("  -= HIGH SCORES =-\n\n");
+	zx_cls_attr(PAPER_BLACK | INK_WHITE);
+	char buffer[20];
+	int len = sprintf(buffer, "-= HIGH SCORES =-");
+	gotoxy(center_x(len), 1); printf(buffer);
 
 	for (i = 0; i < NUM_HISCORES; i++) {
 		r = 3 + (i << 1);
@@ -460,7 +488,7 @@ void show_hiscores(char rank)
 			printf("%d.  ----", i + 1);
 		} else {
 			gotoxy(6, r);
-			printf("%d.  %04d  Lv %d", i + 1,
+			printf("%d.  %06d  Level %d", i + 1,
 			       hiscores[i], hilevel[i]);
 		}
 		attr = (i == rank) ? (BRIGHT | INK_GREEN | PAPER_BLACK)
@@ -469,8 +497,8 @@ void show_hiscores(char rank)
 			set_attr(r, c, attr);
 	}
 
-	gotoxy(4, 16);
-	printf("  Press any key...");
+	gotoxy(9, 16);
+	printf("Press any key...");
 	for (c = 4; c < 28; c++)
 		set_attr(16, c, TITLE_ATTR);
 
@@ -709,7 +737,9 @@ int center_x(int text_len)
 
 void win_cut_scene()
 {
+	zx_border(INK_GREEN);
 	snd_win();
+	zx_border(INK_BLACK);
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_GREEN,
 		BRIGHT | INK_WHITE  | PAPER_GREEN);
@@ -719,7 +749,7 @@ void win_cut_scene()
 	char buffer[30];
 	int len = sprintf(buffer, "** ESCAPED! **");
 	gotoxy(center_x(len), 11); printf(buffer);
-	len = sprintf(buffer, "Score: %d +50", score);
+	len = sprintf(buffer, "Score: %d", score);
 	gotoxy(center_x(len), 12); printf(buffer);
 	len = sprintf(buffer, "Any key - next level");
 	gotoxy(center_x(len), 13); printf(buffer);
@@ -728,7 +758,9 @@ void win_cut_scene()
 
 void game_over_cut_scene()
 {
+	zx_border(INK_RED);
 	snd_caught();
+	zx_border(INK_BLACK);
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_RED,
 		BRIGHT | INK_WHITE  | PAPER_RED);
@@ -764,12 +796,7 @@ main()
 	score = 0;
 
 	while (1) {
-		zx_border(INK_BLUE);
-		zx_cls_attr(INK_WHITE | PAPER_BLACK);
-		clear_pixels();
-		printf("     -= MAZE GAME =-\n");
-		printf(" Press any key to start...");
-		colour_title();
+		zx_border(INK_BLACK);
 
 		/* Seed RNG from keypress timing */
 		rseed = 0;
@@ -781,8 +808,9 @@ main()
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
-		printf("  MAZE Lv%d  O/P/Q/A\n", level);
-		colour_title();
+		char buffer[40];
+		int len = sprintf(buffer, "MAZE Level %d  O/P/Q/A", level);
+		gotoxy(center_x(len), 23); printf(buffer);
 
 		generate_maze();
 		add_extra_passages();
