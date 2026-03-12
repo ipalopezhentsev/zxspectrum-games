@@ -8,6 +8,8 @@
 #include <intrinsic.h>
 #include <arch/zx/spectrum.h>
 
+#define TEXT_SCR_WIDTH 64
+
 #define COLS 14
 #define ROWS 9
 #define NUM_HISCORES 5
@@ -47,6 +49,9 @@ unsigned char level;
 /* High scores table */
 int hiscores[NUM_HISCORES];
 unsigned char hilevel[NUM_HISCORES];
+
+/* Buffer for formatting popup text */
+char popup_buf[22];
 
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
@@ -469,9 +474,7 @@ void show_hiscores(char rank)
 	for (c = 4; c < 28; c++)
 		set_attr(16, c, TITLE_ATTR);
 
-#ifdef __HAVE_KEYBOARD
 	fgetc_cons();
-#endif
 }
 
 /* BFS on maze cell grid (14x9=126 cells instead of 29x19=551).
@@ -660,6 +663,87 @@ unsigned char can_move(char dx, char dy)
 	return !wallmap[(unsigned int)(py + dy) * ECOLS + px + dx];
 }
 
+/* Draw a popup window background: rows 10-14, cols 5-26.
+   Border cells get brick pixels + border_attr; inner cells are cleared + inner_attr.
+   Params are int to avoid sccz80 unsigned char corruption across set_attr calls. */
+void draw_popup_bg(int border_attr, int inner_attr)
+{
+	int r, c, i;
+	unsigned char *base;
+	for (r = 10; r <= 14; r++) {
+		for (c = 5; c <= 26; c++) {
+			base = (unsigned char *)SCR_ADDR(r, c);
+			if (r == 10 || r == 14 || c == 5 || c == 26) {
+				for (i = 0; i < 8; i++) {
+					*base = brick[i];
+					base += 256;
+				}
+				set_attr(r, c, border_attr);
+			} else {
+				for (i = 0; i < 8; i++) {
+					*base = 0;
+					base += 256;
+				}
+				set_attr(r, c, inner_attr);
+			}
+		}
+	}
+}
+
+/* Re-apply inner_attr to text rows 11-13, cols 6-25 (undoes printf attr side-effects).
+   Param is int to avoid sccz80 unsigned char corruption across set_attr calls. */
+void popup_fix_attrs(int inner_attr)
+{
+	int c;
+	for (c = 6; c <= 25; c++) {
+		set_attr(11, c, inner_attr);
+		set_attr(12, c, inner_attr);
+		set_attr(13, c, inner_attr);
+	}
+}
+
+int center_x(int text_len)
+{
+	return (TEXT_SCR_WIDTH - text_len) >> 1;
+}
+
+void win_cut_scene()
+{
+	snd_win();
+	draw_popup_bg(
+		BRIGHT | INK_YELLOW | PAPER_GREEN,
+		BRIGHT | INK_WHITE  | PAPER_GREEN);
+	*((unsigned char *)ATTR_P_ADDR) =
+		BRIGHT | INK_WHITE | PAPER_GREEN;
+	
+	char buffer[30];
+	int len = sprintf(buffer, "** ESCAPED! **");
+	gotoxy(center_x(len), 11); printf(buffer);
+	len = sprintf(buffer, "Score: %d +50", score);
+	gotoxy(center_x(len), 12); printf(buffer);
+	len = sprintf(buffer, "Any key - next level");
+	gotoxy(center_x(len), 13); printf(buffer);
+	popup_fix_attrs(BRIGHT | INK_BLACK | PAPER_GREEN);
+}
+
+void game_over_cut_scene()
+{
+	snd_caught();
+	draw_popup_bg(
+		BRIGHT | INK_YELLOW | PAPER_RED,
+		BRIGHT | INK_WHITE  | PAPER_RED);
+	*((unsigned char *)ATTR_P_ADDR) =
+		BRIGHT | INK_WHITE | PAPER_RED;
+	char buffer[30];
+	int len = sprintf(buffer, "** CAUGHT! **");
+	gotoxy(center_x(len), 11); printf(buffer);
+	len = sprintf(buffer, "Score: %d", score);
+	gotoxy(center_x(len), 12); printf(buffer);
+	len = sprintf(buffer, "Press any key...");
+	gotoxy(center_x(len), 13); printf(buffer);
+	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
+}
+
 /* Enemy move interval — number of main loop ticks between moves */
 #define ENEMY_TICK 300
 
@@ -689,11 +773,9 @@ main()
 
 		/* Seed RNG from keypress timing */
 		rseed = 0;
-#ifdef __HAVE_KEYBOARD
 		while (!getk())
 			rseed++;
 		while (getk()) ;
-#endif
 		if (rseed == 0) rseed = 42;
 
 		level++;
@@ -724,11 +806,7 @@ main()
 		show_score();
 
 		while (1) {
-#ifdef __HAVE_KEYBOARD
 			k = getk();
-#else
-			k = 0;
-#endif
 			dx = 0;
 			dy = 0;
 			if (k == 'o' || k == 'O') dx = -1;
@@ -758,20 +836,8 @@ main()
 					    py == EXIT_GY) {
 						/* Bonus: 50 pts for escaping */
 						score += 50;
-						snd_win();
-						printf("\n\n\n\n\n\n\n\n\n\n\n");
-						printf("\n\n  ESCAPED! +50");
-						printf(" Score:%d\n", score);
-						printf("  Any key=next maze");
-						{
-							int wr, wc;
-							for (wr = 13; wr <= 16; wr++)
-								for (wc = 0; wc < 32; wc++)
-									set_attr(wr, wc, WIN_ATTR);
-						}
-#ifdef __HAVE_KEYBOARD
+						win_cut_scene();
 						fgetc_cons();
-#endif
 						break;
 					}
 
@@ -783,9 +849,7 @@ main()
 				}
 
 				/* Wait for key release */
-#ifdef __HAVE_KEYBOARD
 				while (getk()) ;
-#endif
 			}
 
 			/* Enemy moves on its own timer */
@@ -801,23 +865,8 @@ main()
 			}
 
 			if (caught) {
-				snd_caught();
-				printf("\n\n\n\n\n\n\n\n\n\n\n");
-				printf("\n\n  CAUGHT!");
-				printf(" Score:%d\n", score);
-				printf("  Any key...");
-				{
-					int wr, wc;
-					for (wr = 13; wr <= 16; wr++)
-						for (wc = 0; wc < 32; wc++)
-							set_attr(wr, wc,
-							  BRIGHT | INK_RED |
-							  PAPER_BLACK);
-				}
-#ifdef __HAVE_KEYBOARD
+				game_over_cut_scene();
 				fgetc_cons();
-#endif
-				/* Game over: show high scores */
 				rank = update_hiscores();
 				show_hiscores(rank);
 				/* Reset for new game */

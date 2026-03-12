@@ -80,10 +80,7 @@ main()
 		month = atoi(buf);
 		if (month < 1 || month > 12) {
 			printf("Invalid month!\n");
-#ifdef __HAVE_KEYBOARD
 			fgetc_cons();
-#endif
-			continue;
 		}
 
 		printf("%c", 12);
@@ -138,9 +135,7 @@ main()
 		draw(240, 90, 246, 90);
 		draw(243, 93, 243, 87);
 
-#ifdef __HAVE_KEYBOARD
 		printf("\n  Press any key...");
 		fgetc_cons();
-#endif
 	}
 }

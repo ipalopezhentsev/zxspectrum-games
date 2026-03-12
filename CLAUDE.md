@@ -8,7 +8,7 @@ Cross-compiled C project targeting the ZX Spectrum (Z80) via z88dk, producing .T
 Compile with z88dk's `zcc` targeting the ZX Spectrum:
 
 ```sh
-zcc +zx -vn -o out/spect.bin world.c -lndos -create-app
+zcc +zx -vn -o out/maze.bin maze.c -lndos -create-app
 ```
 
 This produces a `.tap` file loadable in a ZX Spectrum emulator.
@@ -26,7 +26,6 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 ## Conventions
 - Use z88dk-compatible C (subset of C89/C99, no modern C features)
 - Use z88dk headers (`<features.h>`, `<conio.h>`, etc.) for platform-specific functionality
-- `#ifdef __HAVE_KEYBOARD` guards for keyboard input availability
 - Z80 has very limited RAM (~48KB) — keep code and data small
 
 ## Graphics (z88dk `<graphics.h>`)
