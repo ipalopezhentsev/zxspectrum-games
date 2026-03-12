@@ -1,0 +1,73 @@
+# Spect - ZX Spectrum Z80 Project
+
+## Overview
+Cross-compiled C project targeting the ZX Spectrum (Z80) via z88dk, producing .TAP files.
+
+## Build
+
+Compile with z88dk's `zcc` targeting the ZX Spectrum:
+
+```sh
+zcc +zx -vn -o out/spect.bin world.c -lndos -create-app
+```
+
+This produces a `.tap` file loadable in a ZX Spectrum emulator.
+
+## Toolchain
+- **Compiler**: z88dk (`zcc`)
+- **Target**: ZX Spectrum (`+zx`)
+- **Output**: `.TAP` tape image
+- **Language**: C (z88dk dialect — K&R-style `main()` is fine)
+
+## Toolchain paths
+- z88dk install: `C:/Users/ilyap/progs/z88dk/`
+- Headers: `C:/Users/ilyap/progs/z88dk/include/`
+
+## Conventions
+- Use z88dk-compatible C (subset of C89/C99, no modern C features)
+- Use z88dk headers (`<features.h>`, `<conio.h>`, etc.) for platform-specific functionality
+- `#ifdef __HAVE_KEYBOARD` guards for keyboard input availability
+- Z80 has very limited RAM (~48KB) — keep code and data small
+
+## Graphics (z88dk `<graphics.h>`)
+
+### Coordinate system
+- ZX Spectrum screen: 256x192 pixels, 32x24 character cells (each 8x8 pixels)
+- `plot(x, y)` uses 0,0 at **top-left**, x increases right, y increases downward
+- Character cell (row, col): pixel x = col*8, pixel y = row*8
+- To center a dot in a character cell: `x = col*8 + 3`, `y = row*8 + 4`
+
+### Function signatures
+- `plot(x, y)` — plot a single pixel (2 args)
+- `draw(x1, y1, x2, y2)` — draw line between two absolute points (4 args, NOT 2)
+- `drawb(x, y, w, h)` — draw box outline, (x,y) = top-left corner, w/h = dimensions; min 3x3
+
+### Attribute system — CRITICAL
+- Each 8x8 character cell has ONE attribute byte: 1 ink colour, 1 paper colour, 1 bright bit
+- **ALL pixels in an 8x8 cell share the same ink/paper** — you CANNOT have two different colours in one cell
+- This is called "attribute clash" — the #1 constraint when designing ZX Spectrum graphics
+
+### Avoiding attribute clash
+- **Design graphics on the 8x8 grid.** Every moving sprite, wall, corridor, etc. must align to 8x8 character cell boundaries
+- **Never let differently-coloured objects share an 8x8 cell.** If a player sprite and a wall occupy the same character cell, one will "clash" — taking on the other's colour
+- For tile-based games: use the character cell grid directly. Walls = filled 8x8 cells, corridors = empty 8x8 cells. Sprites move between corridor cells
+- For brick/textured walls: write pixel data directly to screen memory (address = `16384 + (row>>3)<<11 + (row&7)<<5 + col`; pixel lines within a cell are 256 bytes apart). Set the cell's attribute separately
+
+### ATTR_P system variable (address 23693)
+- `plot()` and `unplot()` set the attribute of the character cell they write to, using the value at ATTR_P
+- **Always set ATTR_P before calling plot/unplot** to control what colour those calls produce: `*((unsigned char *)23693) = desired_attr;`
+- For sprites that move: set ATTR_P to the sprite colour before draw, set ATTR_P back to background colour after
+- Attribute memory: `22528 + row*32 + col` for character cell (row, col)
+
+### Colour workflow for games
+1. Draw all static graphics (walls, borders) — set their attributes once
+2. Set ATTR_P to the background attribute
+3. Draw/erase moving objects using plot/unplot — ATTR_P controls their colour
+4. To recolour a cell after an object leaves: poke the attribute byte directly, don't redraw everything
+5. **Never bulk-recolour the screen on every frame** — only update the 1-2 cells that changed
+
+### Known issues
+- UDG characters (codes 144+) do **not** render through z88dk's `printf` — it bypasses the ROM. Don't use `printf("%c", 144)` etc. for custom graphics.
+- `draw()` for long lines may render at unexpected positions. Prefer `plot()` loops for reliable horizontal/vertical lines. Short `draw()` calls (a few pixels) work fine.
+- `drawb()` reliably renders box outlines at correct positions.
+- Text-based separators (`---`) are more reliable than pixel separator lines.

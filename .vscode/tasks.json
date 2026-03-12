@@ -1,0 +1,44 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build TAP",
+      "type": "shell",
+      "command": "zcc",
+      "args": [
+        "+zx",
+        "-vn",
+        "-o",
+        "out/maze.bin",
+        "maze.c",
+        "-lndos",
+        "-create-app"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run in Spectaculator",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-Command",
+        "Start-Process '${workspaceFolder}\\out\\maze.tap'; Start-Sleep -Milliseconds 500; Add-Type -AssemblyName Microsoft.VisualBasic; $p = Get-Process Spectaculator -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) { [Microsoft.VisualBasic.Interaction]::AppActivate($p.Id) }"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Build and Run",
+      "dependsOn": [
+        "Build TAP",
+        "Run in Spectaculator"
+      ],
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}
