@@ -64,6 +64,19 @@ unsigned char hilevel[NUM_HISCORES];
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
 
+/* Transient globals for inline-asm sprite routines */
+unsigned int ds_scr;
+unsigned char *ds_spr_ptr;
+unsigned int ds_attr_a;
+unsigned char ds_attr_v;
+unsigned char ds_row;
+unsigned char ds_col;
+
+/* BFS lookup tables: precomputed row/col from linear index,
+   eliminates expensive Z80 division by 14 in the BFS inner loop */
+unsigned char bfs_row[ROWS * COLS];
+unsigned char bfs_col[ROWS * COLS];
+
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
@@ -137,13 +150,34 @@ unsigned char spr_coin[8] = {
 };
 
 
-/* Set attribute for character cell (row, col) */
+/* Set attribute for character cell (row, col).
+   Inline asm computes addr via 5 shifts (55 T-states)
+   instead of library multiply by 32 (~200 T-states). */
 void set_attr(unsigned char row, unsigned char col,
               unsigned char attr)
 {
-	unsigned char *p;
-	p = (unsigned char *)(ATTR_BASE + row * 32 + col);
-	*p = attr;
+	ds_row = row;
+	ds_col = col;
+	ds_attr_v = attr;
+
+#asm
+	; Compute 22528 + row*32 + col
+	ld a, (_ds_row)
+	ld l, a
+	ld h, 0
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl            ; HL = row * 32
+	ld a, (_ds_col)
+	add a, l
+	ld l, a               ; row*32 low 5 bits are 0, col<32, no carry
+	ld de, 22528
+	add hl, de            ; HL = attr address
+	ld a, (_ds_attr_v)
+	ld (hl), a
+#endasm
 }
 
 /* Clear all pixel data (6144 bytes at 16384) */
@@ -308,33 +342,83 @@ void draw_maze()
 	}
 }
 
-/* Write an 8-byte bitmap into character cell (sr, sc) and set attr. */
+/* Write an 8-byte bitmap into character cell (sr, sc) and set attr.
+   Unrolled inline asm: INC H steps to the next pixel row within
+   the same character cell (rows are 256 bytes apart in screen RAM). */
 void draw_sprite(unsigned char sr, unsigned char sc,
                  unsigned char *spr, unsigned char attr)
 {
-	unsigned char *base;
-	unsigned char i;
-	base = (unsigned char *)SCR_ADDR(sr, sc);
-	for (i = 0; i < 8; i++) {
-		*base = spr[i];
-		SC_NEXT_LINE(base);
-	}
-	set_attr(sr, sc, attr);
+	ds_scr = SCR_ADDR(sr, sc);
+	ds_spr_ptr = spr;
+	ds_attr_a = ATTR_BASE + (unsigned int)sr * 32 + sc;
+	ds_attr_v = attr;
+
+#asm
+	ld hl, (_ds_spr_ptr)
+	ex de, hl           ; DE = sprite data
+	ld hl, (_ds_scr)    ; HL = screen address
+
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+	inc h
+	inc de
+	ld a, (de)
+	ld (hl), a
+
+	; Set attribute byte directly
+	ld hl, (_ds_attr_a)
+	ld a, (_ds_attr_v)
+	ld (hl), a
+#endasm
 }
 
-/* Clear a character cell (just attribute) */
+/* Clear a character cell (just attribute, CORR_ATTR=0).
+   Inline asm avoids set_attr function call overhead entirely. */
 void clear_cell(unsigned char sr, unsigned char sc)
 {
-	//we don't clear pixels because attribute change is enough to make them invisible, 
-	//and clearing pixels causes slowdown
-	//unsigned char *base;
-	//unsigned char i;
-	//base = (unsigned char *)SCR_ADDR(sr, sc);
-	// for (i = 0; i < 8; i++) {
-	// 	*base = 0;
-	// 	base += 256;
-	// }
-	set_attr(sr, sc, CORR_ATTR);
+	ds_row = sr;
+	ds_col = sc;
+
+#asm
+	ld a, (_ds_row)
+	ld l, a
+	ld h, 0
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	ld a, (_ds_col)
+	add a, l
+	ld l, a
+	ld de, 22528
+	add hl, de
+	ld (hl), 0            ; CORR_ATTR = INK_BLACK|PAPER_BLACK = 0
+#endasm
 }
 
 void draw_dot(unsigned char gx, unsigned char gy)
@@ -393,10 +477,42 @@ void snd_win()
 	intrinsic_ei();
 }
 
-/* Draw a brick-textured 8x8 block at screen char (sr, sc) */
+/* Draw a brick-textured 8x8 block at screen char (sr, sc).
+   Hardcoded pixel values avoid sprite data reads entirely. */
 void draw_brick(unsigned char sr, unsigned char sc)
 {
-	draw_sprite(sr, sc, brick, WALL_ATTR);
+	ds_scr = SCR_ADDR(sr, sc);
+	ds_attr_a = ATTR_BASE + (unsigned int)sr * 32 + sc;
+	ds_attr_v = WALL_ATTR;
+
+#asm
+	ld hl, (_ds_scr)
+
+	ld a, 247            ; 0b11110111
+	ld (hl), a
+	inc h
+	ld (hl), a
+	inc h
+	ld (hl), a
+	inc h
+	xor a                ; 0x00
+	ld (hl), a
+	inc h
+	ld a, 223            ; 0b11011111
+	ld (hl), a
+	inc h
+	ld (hl), a
+	inc h
+	ld (hl), a
+	inc h
+	xor a
+	ld (hl), a
+
+	; Set wall attribute
+	ld hl, (_ds_attr_a)
+	ld a, (_ds_attr_v)
+	ld (hl), a
+#endasm
 }
 
 void draw_enemy(unsigned char gx, unsigned char gy)
@@ -550,8 +666,8 @@ int enemy_bfs(int exx, int eyy)
 
 	efi = ecy * COLS + ecx;
 
-	/* Clear vis (may be dirty from generate_maze or previous BFS) */
-	memset(vis, 0, ROWS * COLS);
+	/* vis[] is pre-cleared after maze generation and cleaned up
+	   at the end of each BFS call — no per-call memset needed */
 
 	head = 0;
 	tail = 0;
@@ -573,8 +689,8 @@ int enemy_bfs(int exx, int eyy)
 			return -1;
 		}
 
-		cr = ci / COLS;
-		cc = ci - cr * COLS;
+		cr = bfs_row[ci];
+		cc = bfs_col[ci];
 
 		/* Left */
 		if (cc > 0) {
@@ -828,6 +944,12 @@ main()
 	level = 0;
 	score = 0;
 
+	/* Init BFS lookup tables (avoids Z80 division by 14 in inner loop) */
+	for (rank = 0; rank < ROWS * COLS; rank++) {
+		bfs_row[rank] = rank / COLS;
+		bfs_col[rank] = rank % COLS;
+	}
+
 	rseed = 0;
 
 	/* Difficulty selection (first pick also seeds RNG) */
@@ -912,6 +1034,7 @@ main()
 		generate_maze();
 		add_extra_passages();
 		draw_maze();
+		memset(vis, 0, ROWS * COLS);  /* Clear for BFS after maze gen */
 
 		/* Random starting positions: exit first so others avoid it */
 		random_start(&exit_gx, &exit_gy, 255, 255, 255, 255);

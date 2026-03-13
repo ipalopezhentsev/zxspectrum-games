@@ -132,3 +132,38 @@ Global variables as `unsigned char` work correctly — the compiler loads/stores
 - **`SCR_ADDR` macro**: precompute screen addresses with `16384u + ((unsigned int)(sr >> 3) << 11) + ((unsigned int)(sr & 7) << 5) + sc` — avoids repeated calculation
 - **`unsigned char` for arrays that only store small values**: `stk[]`, `vis[]` etc. can be `unsigned char` instead of `int` to halve memory usage
 - **`unsigned char` function params for leaf functions**: functions like `set_attr(unsigned char row, unsigned char col, unsigned char attr)` that don't call other functions can safely use 8-bit params
+
+## Inline assembly optimization — patterns and findings
+
+### When to use inline asm
+- **Hot inner loops** doing screen writes or address computation — C loop overhead and library multiply calls dominate
+- **Leaf functions called hundreds of times** (e.g. `set_attr`, `draw_sprite`, `clear_cell`) — function call overhead (param push + CALL + RET ≈ 110 T-states) can exceed the actual work
+- **Division/modulo by non-power-of-2** — Z80 has no hardware divide; library routines cost ~200–500 T-states. Use lookup tables instead
+
+### Inline asm syntax in z88dk/sccz80
+- Use `#asm` / `#endasm` blocks inside C function bodies
+- C globals are referenced with underscore prefix: C `ds_scr` → asm `_ds_scr`
+- IDE will show errors on `#asm` blocks (it doesn't understand z88dk asm) — these are false positives; only `zcc` compilation matters
+- **Globals bridge pattern**: pass values between C and asm via `unsigned char` globals to avoid fragile stack-offset access. Declare transient globals (e.g. `ds_row`, `ds_col`, `ds_attr_v`) for this purpose
+
+### Fastest Z80 patterns for ZX Spectrum screen writes
+
+#### 8x8 sprite draw (1 byte wide): `INC H` unrolled loop
+- Within a character cell, pixel rows are 256 bytes apart — incrementing H register moves to the next row
+- Unrolled: `ld a,(de) / ld (hl),a / inc h / inc de` × 8 = ~192 T-states (vs ~700+ for C loop)
+- For sprites with known pixel data (e.g. brick pattern), hardcode values as immediates: `ld a, 247 / ld (hl), a / inc h` — eliminates all sprite memory reads
+
+#### Multiply by 32 (attribute address): 5× `ADD HL,HL`
+- `ld l,a / ld h,0 / add hl,hl` ×5 = 55 T-states for `row * 32`
+- Since low 5 bits of result are always 0, can add col with `add a,l / ld l,a` (no carry possible when col < 32)
+- Much faster than sccz80's library multiply routine (~200 T-states)
+
+#### Why PUSH trick doesn't apply to 8x8 sprites
+- PUSH writes 2 contiguous bytes and decrements SP — useful for contiguous memory fills (screen clears, wide sprite blits)
+- 8x8 character cell pixel rows are 256 bytes apart (non-contiguous) — PUSH can't stride between them
+- PUSH also writes 2 bytes, which would corrupt the adjacent column for 1-byte-wide sprites
+- The `INC H` approach is the canonical fast technique for this memory layout
+
+### Algorithmic optimizations for gameplay performance
+- **Replace division with lookup tables**: for BFS on a grid, precompute `row[i] = i / COLS` and `col[i] = i % COLS` at startup. Table lookup = ~19 T-states vs division = ~200–500 T-states. With 30–60 BFS iterations × 3 enemies, saves ~30,000–90,000 T-states per enemy tick
+- **Incremental array cleanup instead of bulk memset**: if an algorithm (like BFS) tracks which array entries it modified, clean only those entries at the end instead of memset-ing the whole array on every call. Move the initial memset to a one-time setup point (e.g. after maze generation)
