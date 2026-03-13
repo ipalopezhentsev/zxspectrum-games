@@ -40,8 +40,8 @@ unsigned char walls[ROWS][COLS];
 /* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
 unsigned char wallmap[EROWS * ECOLS];
 unsigned char px, py;    /* player position in expanded grid */
-unsigned char enx[3], eny[3];    /* enemy positions in expanded grid */
-unsigned char last_edir_arr[3];  /* last direction each enemy moved */
+unsigned char enx[4], eny[4];    /* enemy positions in expanded grid */
+unsigned char last_edir_arr[4];  /* last direction each enemy moved */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
@@ -49,8 +49,8 @@ unsigned char coinmap[ROWS * COLS];
 int score;
 unsigned char coins_left;
 unsigned char level;
-unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard */
-unsigned char num_enemies;   /* 1, 2, or 3 */
+unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard, 4=Nightmare */
+unsigned char num_enemies;   /* 1, 2, 3, or 4 */
 unsigned char enemy_frames;  /* frames between enemy moves */
 unsigned char chase_pct;     /* % chance enemy uses BFS chase */
 unsigned char extra_wall_pct; /* 1-in-N chance to remove a wall */
@@ -85,6 +85,7 @@ unsigned char bfs_col[ROWS * COLS];
 #define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
 #define ENEMY2_ATTR (BRIGHT | INK_MAGENTA | PAPER_BLACK)
 #define ENEMY3_ATTR (BRIGHT | INK_CYAN | PAPER_BLACK)
+#define ENEMY4_ATTR (BRIGHT | INK_WHITE | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
@@ -756,7 +757,7 @@ void move_enemy(int n)
 
 	old_ex = enx[n];
 	old_ey = eny[n];
-	attr = (n == 0) ? ENEMY_ATTR : (n == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
+	attr = (n == 0) ? ENEMY_ATTR : (n == 1) ? ENEMY2_ATTR : (n == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
 
 	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — chase_pct% chase, rest random */
@@ -789,7 +790,7 @@ void move_enemy(int n)
 		for (oi = 0; oi < num_enemies; oi++) {
 			if (oi == n) continue;
 			if (old_ex == enx[oi] && old_ey == eny[oi]) {
-				oa = (oi == 0) ? ENEMY_ATTR : (oi == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
+				oa = (oi == 0) ? ENEMY_ATTR : (oi == 1) ? ENEMY2_ATTR : (oi == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
 				draw_sprite(SROW(eny[oi]), SCOL(enx[oi]), spr_enemy, oa);
 			}
 		}
@@ -980,11 +981,16 @@ main()
 			gotoxy(center_x(len), 14); printf(txt_buffer);
 			for (c = 12; c < 20; c++)
 				set_attr(14, c, BRIGHT | INK_RED | PAPER_BLACK);
+
+			len = sprintf(txt_buffer, "4 - Nightmare");
+			gotoxy(center_x(len), 16); printf(txt_buffer);
+			for (c = 10; c < 22; c++)
+				set_attr(16, c, BRIGHT | INK_MAGENTA | PAPER_BLACK);
 		}
 
 		/* Wait for 1/2/3; spin increments rseed for RNG seeding */
 		k = 0;
-		while (k != '1' && k != '2' && k != '3') {
+		while (k != '1' && k != '2' && k != '3' && k != '4') {
 			rseed++;
 			k = getk_inkey();
 		}
@@ -1006,13 +1012,20 @@ main()
 			extra_wall_pct = 5;   /* 1-in-5 = ~20% walls removed */
 			extra_halls_base = 3;
 			extra_halls_rng = 2;  /* 3-5 halls */
-		} else {
+		} else if (difficulty == 3) {
 			num_enemies = 3;
 			enemy_frames = 4;
 			chase_pct = 50;
 			extra_wall_pct = 8;   /* 1-in-8 = ~12% walls removed */
 			extra_halls_base = 1;
 			extra_halls_rng = 1;  /* 1-2 halls */
+		} else {
+			num_enemies = 4;
+			enemy_frames = 3;
+			chase_pct = 70;
+			extra_wall_pct = 10;  /* 1-in-10 = ~10% walls removed */
+			extra_halls_base = 1;
+			extra_halls_rng = 0;  /* 1 hall */
 		}
 
 	game_over = 0;
@@ -1026,7 +1039,8 @@ main()
 			int len;
 			char *dname;
 			dname = (difficulty == 1) ? "Easy" :
-			        (difficulty == 2) ? "Normal" : "Hard";
+			        (difficulty == 2) ? "Normal" :
+			        (difficulty == 3) ? "Hard" : "Nightmare";
 			len = sprintf(txt_buffer, "Lv%d [%s]  O/P/Q/A", level, dname);
 			gotoxy(center_x(len), 23); printf(txt_buffer);
 		}
@@ -1044,6 +1058,8 @@ main()
 			random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
 		if (num_enemies > 2)
 			random_start(&enx[2], &eny[2], px, py, enx[1], eny[1]);
+		if (num_enemies > 3)
+			random_start(&enx[3], &eny[3], px, py, enx[2], eny[2]);
 		caught = 0;
 		tick = 0;
 		key_delay = 0;
@@ -1060,7 +1076,7 @@ main()
 			int ei;
 			unsigned char ea;
 			for (ei = 0; ei < num_enemies; ei++) {
-				ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
+				ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR : (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
 				draw_sprite(SROW(eny[ei]), SCOL(enx[ei]), spr_enemy, ea);
 			}
 		}
