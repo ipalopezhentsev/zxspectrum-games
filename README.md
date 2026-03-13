@@ -44,3 +44,5 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 + introduce asm inserts in inner loops?
 - title page
 - joysticks?
+- show zoomed location of player on start
+- remove D button and its stats

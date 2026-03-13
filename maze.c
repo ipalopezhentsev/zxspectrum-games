@@ -73,9 +73,6 @@ unsigned int dbg_slow;       /* total slow frames (took >1 interrupt) */
 unsigned int dbg_worst;      /* worst frame time in interrupts */
 unsigned int dbg_last_frames; /* FRAMES counter after previous halt */
 unsigned char dbg_enabled;   /* 1 = show metrics on row 1 */
-unsigned char dbg_w_enemy;   /* worst frames spent in enemy tick */
-unsigned char dbg_w_input;   /* worst frames spent in player input */
-unsigned char dbg_w_timer;   /* worst frames spent in timer/display */
 
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
@@ -96,6 +93,17 @@ unsigned char bfs_col[ROWS * COLS];
 unsigned char row_x_cols[ROWS];
 /* Precomputed row * ECOLS: eliminates Z80 multiply by 29 */
 unsigned int erow_x_ecols[EROWS];
+
+/* Precomputed adjacency for BFS: 4 neighbors per cell (L,R,U,D).
+   255 = wall or boundary. Built once after maze generation. */
+unsigned char adj[ROWS * COLS * 4];
+
+/* Transient globals for inline-asm BFS loop */
+unsigned char bfs_efi_g;
+unsigned char bfs_head_g;
+unsigned char bfs_tail_g;
+unsigned char bfs_result_g;
+unsigned int bfs_adj_ptr_g;
 
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
@@ -668,9 +676,7 @@ void show_debug()
 {
 	int len, c;
 	if (!dbg_enabled) return;
-	len = sprintf(txt_buffer, "S:%u W:%u E:%u I:%u T:%u",
-		dbg_slow, dbg_worst,
-		dbg_w_enemy, dbg_w_input, dbg_w_timer);
+	len = sprintf(txt_buffer, "SLOW:%u WORST:%u", dbg_slow, dbg_worst);
 	gotoxy(0, 1); printf(txt_buffer);
 	for (c = 0; c < len; c++)
 		set_attr(1, c, BRIGHT | INK_CYAN | PAPER_BLACK);
@@ -730,84 +736,212 @@ void show_hiscores(char rank)
 	fgetc_cons();
 }
 
-/* BFS on maze cell grid (14x9=126 cells instead of 29x19=551).
+/* Build adjacency table from walls[][] for fast BFS.
+   Must be called after generate_maze() + add_extra_passages(). */
+void build_adj()
+{
+	int i, r, c, idx;
+	for (i = 0; i < ROWS * COLS; i++) {
+		r = bfs_row[i];
+		c = bfs_col[i];
+		idx = i * 4;
+		adj[idx]     = (c > 0 && !(walls[r][c - 1] & 1)) ? i - 1 : 255;
+		adj[idx + 1] = (c < COLS - 1 && !(walls[r][c] & 1)) ? i + 1 : 255;
+		adj[idx + 2] = (r > 0 && !(walls[r - 1][c] & 2)) ? i - COLS : 255;
+		adj[idx + 3] = (r < ROWS - 1 && !(walls[r][c] & 2)) ? i + COLS : 255;
+	}
+}
+
+/* BFS on maze cell grid with inline-asm inner loop.
+   Precomputed adj[] eliminates all walls/boundary checks.
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 int enemy_bfs(int exx, int eyy)
 {
-	int head, tail;
-	int ci, ni;
 	int ecx, ecy, pcx, pcy;
-	int efi;
-	int cr, cc;
+	int ci;
 	unsigned char d;
 
-	/* Convert expanded grid to maze cell coords (only valid at odd pos) */
 	ecx = exx >> 1;  ecy = eyy >> 1;
-	pcx = px >> 1;  pcy = py >> 1;
+	pcx = px >> 1;   pcy = py >> 1;
 
-	efi = row_x_cols[ecy] + ecx;
+	bfs_efi_g = row_x_cols[ecy] + ecx;
 
-	/* vis[] is pre-cleared after maze generation and cleaned up
-	   at the end of each BFS call — no per-call memset needed */
-
-	head = 0;
-	tail = 0;
+	bfs_head_g = 0;
+	bfs_tail_g = 1;
 	ci = row_x_cols[pcy] + pcx;
-	stk[tail++] = ci;
+	stk[0] = ci;
 	vis[ci] = 5;
+	bfs_result_g = 255;
 
-	while (head < tail && head < 40) {
-		ci = stk[head++];
+#asm
+	push ix
 
-		if (ci == efi) {
-			d = vis[efi] - 1;
-			for (ci = 0; ci < tail; ci++)
-				vis[stk[ci]] = 0;
-			if (d == 0) return 1;  /* was left, enemy goes right */
-			if (d == 1) return 0;  /* was right, enemy goes left */
-			if (d == 2) return 3;  /* was up, enemy goes down */
-			if (d == 3) return 2;  /* was down, enemy goes up */
-			return -1;
-		}
+	;=== BFS main loop (inline asm for speed) ===
+.bfs_il_loop
+	; --- Check termination ---
+	ld a, (_bfs_head_g)
+	ld b, a
+	ld a, (_bfs_tail_g)
+	cp b
+	jp z, bfs_il_end          ; head == tail, queue empty
+	ld a, b
+	cp 40
+	jp nc, bfs_il_end         ; head >= 40, depth limit
 
-		cr = bfs_row[ci];
-		cc = bfs_col[ci];
+	; --- Dequeue: ci = stk[head]; head++ ---
+	ld l, b
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld c, (hl)                ; C = ci
+	inc b
+	ld a, b
+	ld (_bfs_head_g), a
 
-		/* Left */
-		if (cc > 0) {
-			ni = ci - 1;
-			if (!vis[ni] && !(walls[cr][cc - 1] & 1)) {
-				vis[ni] = 1;
-				stk[tail++] = ni;
-			}
-		}
-		/* Right */
-		if (cc < COLS - 1) {
-			ni = ci + 1;
-			if (!vis[ni] && !(walls[cr][cc] & 1)) {
-				vis[ni] = 2;
-				stk[tail++] = ni;
-			}
-		}
-		/* Up */
-		if (cr > 0) {
-			ni = ci - COLS;
-			if (!vis[ni] && !(walls[cr - 1][cc] & 2)) {
-				vis[ni] = 3;
-				stk[tail++] = ni;
-			}
-		}
-		/* Down */
-		if (cr < ROWS - 1) {
-			ni = ci + COLS;
-			if (!vis[ni] && !(walls[cr][cc] & 2)) {
-				vis[ni] = 4;
-				stk[tail++] = ni;
-			}
-		}
+	; --- Check if found target ---
+	ld a, (_bfs_efi_g)
+	cp c
+	jp z, bfs_il_found
+
+	; --- Compute adj base: HL = &adj[ci*4] ---
+	ld l, c
+	ld h, 0
+	add hl, hl
+	add hl, hl                ; HL = ci * 4
+	ld de, _adj
+	add hl, de                ; HL = &adj[ci*4]
+
+	; === Dir 0 (left), vis = 1 ===
+	ld a, (hl)
+	inc hl
+	ld (_bfs_adj_ptr_g), hl   ; save ptr for next dir
+	cp 255
+	jr z, bfs_il_s0
+	ld e, a
+	ld d, 0
+	ld hl, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, bfs_il_s0
+	ld (hl), 1
+	ld c, e                   ; C = ni (ci no longer needed)
+	ld a, (_bfs_tail_g)
+	ld l, a
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), c
+	inc a
+	ld (_bfs_tail_g), a
+.bfs_il_s0
+
+	; === Dir 1 (right), vis = 2 ===
+	ld hl, (_bfs_adj_ptr_g)
+	ld a, (hl)
+	inc hl
+	ld (_bfs_adj_ptr_g), hl
+	cp 255
+	jr z, bfs_il_s1
+	ld e, a
+	ld d, 0
+	ld hl, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, bfs_il_s1
+	ld (hl), 2
+	ld c, e
+	ld a, (_bfs_tail_g)
+	ld l, a
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), c
+	inc a
+	ld (_bfs_tail_g), a
+.bfs_il_s1
+
+	; === Dir 2 (up), vis = 3 ===
+	ld hl, (_bfs_adj_ptr_g)
+	ld a, (hl)
+	inc hl
+	ld (_bfs_adj_ptr_g), hl
+	cp 255
+	jr z, bfs_il_s2
+	ld e, a
+	ld d, 0
+	ld hl, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, bfs_il_s2
+	ld (hl), 3
+	ld c, e
+	ld a, (_bfs_tail_g)
+	ld l, a
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), c
+	inc a
+	ld (_bfs_tail_g), a
+.bfs_il_s2
+
+	; === Dir 3 (down), vis = 4 ===
+	ld hl, (_bfs_adj_ptr_g)
+	ld a, (hl)
+	; (no need to save adj ptr — last direction)
+	cp 255
+	jr z, bfs_il_s3
+	ld e, a
+	ld d, 0
+	ld hl, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, bfs_il_s3
+	ld (hl), 4
+	ld c, e
+	ld a, (_bfs_tail_g)
+	ld l, a
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), c
+	inc a
+	ld (_bfs_tail_g), a
+.bfs_il_s3
+
+	jp bfs_il_loop
+
+.bfs_il_found
+	; C = ci = efi — read vis[efi] as result
+	ld l, c
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	ld (_bfs_result_g), a
+
+.bfs_il_end
+	pop ix
+#endasm
+
+	/* Cleanup: zero visited entries */
+	{
+		int i;
+		for (i = 0; i < bfs_tail_g; i++)
+			vis[stk[i]] = 0;
 	}
-	for (ci = 0; ci < tail; ci++)
-		vis[stk[ci]] = 0;
+
+	d = bfs_result_g;
+	if (d == 255) return -1;
+	d--;
+	if (d == 0) return 1;  /* was left, enemy goes right */
+	if (d == 1) return 0;  /* was right, enemy goes left */
+	if (d == 2) return 3;  /* was up, enemy goes down */
+	if (d == 3) return 2;  /* was down, enemy goes up */
 	return -1;
 }
 
@@ -825,7 +959,45 @@ int enemy_random_dir(int exx, int eyy)
 	return dirs[rng() % nd];
 }
 
-/* Move enemy n (0 or 1) one step.
+/* Try Manhattan direction toward player from (exx,eyy) on expanded grid.
+   Returns direction if passable, -1 if both axes blocked. */
+int enemy_manhattan(int exx, int eyy)
+{
+	int adx, ady, fi, dir1, dir2;
+	int ddx, ddy;
+	ddx = px - exx;
+	ddy = py - eyy;
+	adx = ddx < 0 ? -ddx : ddx;
+	ady = ddy < 0 ? -ddy : ddy;
+	fi = erow_x_ecols[eyy] + exx;
+
+	/* Pick primary axis (larger distance), secondary as fallback */
+	if (adx >= ady) {
+		dir1 = (ddx > 0) ? 1 : 0;
+		dir2 = (ady == 0) ? -1 : ((ddy > 0) ? 3 : 2);
+	} else {
+		dir1 = (ddy > 0) ? 3 : 2;
+		dir2 = (adx == 0) ? -1 : ((ddx > 0) ? 1 : 0);
+	}
+
+	/* Try primary direction */
+	if (dir1 == 0 && !wallmap[fi - 1]) return 0;
+	if (dir1 == 1 && !wallmap[fi + 1]) return 1;
+	if (dir1 == 2 && !wallmap[fi - ECOLS]) return 2;
+	if (dir1 == 3 && !wallmap[fi + ECOLS]) return 3;
+
+	/* Try secondary direction */
+	if (dir2 >= 0) {
+		if (dir2 == 0 && !wallmap[fi - 1]) return 0;
+		if (dir2 == 1 && !wallmap[fi + 1]) return 1;
+		if (dir2 == 2 && !wallmap[fi - ECOLS]) return 2;
+		if (dir2 == 3 && !wallmap[fi + ECOLS]) return 3;
+	}
+
+	return -1;  /* both axes blocked — need BFS */
+}
+
+/* Move enemy n one step.
    At odd position (maze cell): use cached BFS, recalc, or random.
    At even position (corridor): continue in same direction. */
 void move_enemy(int n)
@@ -841,9 +1013,11 @@ void move_enemy(int n)
 
 	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — chase_pct% chase, rest random */
-		if ((int)(rng() % 100) < chase_pct)
-			dir = enemy_bfs(old_ex, old_ey);
-		else
+		if ((int)(rng() % 100) < chase_pct) {
+			dir = enemy_manhattan(old_ex, old_ey);
+			if (dir < 0)
+				dir = enemy_bfs(old_ex, old_ey);
+		} else
 			dir = enemy_random_dir(old_ex, old_ey);
 	} else {
 		/* In corridor between cells — keep going */
@@ -1159,6 +1333,7 @@ main()
 
 		generate_maze();
 		add_extra_passages();
+		build_adj();
 		draw_maze();
 		memset(vis, 0, ROWS * COLS);  /* Clear for BFS after maze gen */
 
@@ -1187,9 +1362,6 @@ main()
 
 		dbg_slow = 0;
 		dbg_worst = 0;
-		dbg_w_enemy = 0;
-		dbg_w_input = 0;
-		dbg_w_timer = 0;
 
 		/* Place coins and draw everything */
 		place_coins();
@@ -1228,10 +1400,6 @@ main()
 			}
 
 			/* --- Player input --- */
-			{
-				unsigned int dbg_t0, dbg_t1, dbg_dt;
-				dbg_t0 = *((unsigned int *)23672u);
-
 			k = getk();
 			dx = 0;
 			dy = 0;
@@ -1299,21 +1467,11 @@ main()
 				}
 			}
 
-				dbg_t1 = *((unsigned int *)23672u);
-				dbg_dt = dbg_t1 - dbg_t0;
-				if (dbg_dt > dbg_w_input)
-					dbg_w_input = dbg_dt;
-			}
-
 			/* --- Enemy moves spread across frames --- */
 			/* Bresenham: accumulate num_enemies per frame, fire one
 			   move each time accum >= enemy_frames.  Over enemy_frames
 			   frames exactly num_enemies moves happen (one per enemy),
 			   but at most 1-2 per frame instead of all N at once. */
-			{
-				unsigned int dbg_t0, dbg_t1, dbg_dt;
-				dbg_t0 = *((unsigned int *)23672u);
-
 			enemy_accum += num_enemies;
 			while (enemy_accum >= enemy_frames) {
 				enemy_accum -= enemy_frames;
@@ -1325,17 +1483,7 @@ main()
 					enemy_next = 0;
 			}
 
-				dbg_t1 = *((unsigned int *)23672u);
-				dbg_dt = dbg_t1 - dbg_t0;
-				if (dbg_dt > dbg_w_enemy)
-					dbg_w_enemy = dbg_dt;
-			}
-
 			/* --- Timer countdown --- */
-			{
-				unsigned int dbg_t0, dbg_t1, dbg_dt;
-				dbg_t0 = *((unsigned int *)23672u);
-
 			timer_frac--;
 			if (timer_frac == 0) {
 				timer_frac = 50;
@@ -1355,12 +1503,6 @@ main()
 						break;
 					}
 				}
-			}
-
-				dbg_t1 = *((unsigned int *)23672u);
-				dbg_dt = dbg_t1 - dbg_t0;
-				if (dbg_dt > dbg_w_timer)
-					dbg_w_timer = dbg_dt;
 			}
 
 			if (caught) {
