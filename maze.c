@@ -56,10 +56,15 @@ unsigned char chase_pct;     /* % chance enemy uses BFS chase */
 unsigned char extra_wall_pct; /* 1-in-N chance to remove a wall */
 unsigned char extra_halls_base; /* base number of extra halls */
 unsigned char extra_halls_rng;  /* random additional halls */
+unsigned char time_limit;       /* seconds per level for this difficulty */
 
 /* High scores table */
 int hiscores[NUM_HISCORES];
 unsigned char hilevel[NUM_HISCORES];
+
+/* Timer state */
+unsigned int timer_sec;    /* seconds remaining */
+unsigned char timer_frac;  /* frame counter within current second (0-49) */
 
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
@@ -91,6 +96,8 @@ unsigned char bfs_col[ROWS * COLS];
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define HISCORE_ATTR (BRIGHT | INK_YELLOW | PAPER_BLACK)
+#define TIMER_ATTR   (BRIGHT | INK_WHITE | PAPER_BLACK)
+#define TIMER_WARN_ATTR (BRIGHT | INK_RED | PAPER_BLACK)
 
 /* Exit position in expanded grid (randomized each level) */
 unsigned char exit_gx, exit_gy;
@@ -596,6 +603,21 @@ void show_score()
 	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
 
+/* Display remaining time on row 0 */
+void show_timer()
+{
+	int len, c;
+	unsigned int m, s;
+	unsigned char attr;
+	m = timer_sec / 60;
+	s = timer_sec - m * 60;
+	len = sprintf(txt_buffer, "TIME %d:%02d", m, s);
+	gotoxy(center_x(len), 0); printf(txt_buffer);
+	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
+	for (c = 12; c < 20; c++)
+		set_attr(0, c, attr);
+}
+
 /* Update high scores table, return rank (0-based) or -1 */
 int update_hiscores()
 {
@@ -898,7 +920,7 @@ void win_cut_scene()
 	
 	int len = sprintf(txt_buffer, "** ESCAPED! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Score: %d", score);
+	len = sprintf(txt_buffer, "Time bonus: +%d", timer_sec);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Any key - next level");
 	gotoxy(center_x(len), 13); printf(txt_buffer);
@@ -916,6 +938,25 @@ void game_over_cut_scene()
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_RED;
 	int len = sprintf(txt_buffer, "** CAUGHT! **");
+	gotoxy(center_x(len), 11); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Score: %d", score);
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Press any key...");
+	gotoxy(center_x(len), 13); printf(txt_buffer);
+	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
+}
+
+void time_up_cut_scene()
+{
+	zx_border(INK_RED);
+	snd_caught();
+	zx_border(INK_BLACK);
+	draw_popup_bg(
+		BRIGHT | INK_YELLOW | PAPER_RED,
+		BRIGHT | INK_WHITE  | PAPER_RED);
+	*((unsigned char *)ATTR_P_ADDR) =
+		BRIGHT | INK_WHITE | PAPER_RED;
+	int len = sprintf(txt_buffer, "** TIME UP! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Score: %d", score);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
@@ -1005,6 +1046,7 @@ main()
 			extra_wall_pct = 3;   /* 1-in-3 = ~33% walls removed */
 			extra_halls_base = 5;
 			extra_halls_rng = 3;  /* 5-8 halls */
+			time_limit = 90;
 		} else if (difficulty == 2) {
 			num_enemies = 2;
 			enemy_frames = 6;
@@ -1012,6 +1054,7 @@ main()
 			extra_wall_pct = 5;   /* 1-in-5 = ~20% walls removed */
 			extra_halls_base = 3;
 			extra_halls_rng = 2;  /* 3-5 halls */
+			time_limit = 60;
 		} else if (difficulty == 3) {
 			num_enemies = 3;
 			enemy_frames = 4;
@@ -1019,6 +1062,7 @@ main()
 			extra_wall_pct = 8;   /* 1-in-8 = ~12% walls removed */
 			extra_halls_base = 1;
 			extra_halls_rng = 1;  /* 1-2 halls */
+			time_limit = 45;
 		} else {
 			num_enemies = 4;
 			enemy_frames = 3;
@@ -1026,6 +1070,7 @@ main()
 			extra_wall_pct = 10;  /* 1-in-10 = ~10% walls removed */
 			extra_halls_base = 1;
 			extra_halls_rng = 0;  /* 1 hall */
+			time_limit = 30;
 		}
 
 	game_over = 0;
@@ -1063,6 +1108,8 @@ main()
 		caught = 0;
 		tick = 0;
 		key_delay = 0;
+		timer_sec = time_limit;
+		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		{
 			int ei;
 			for (ei = 0; ei < num_enemies; ei++)
@@ -1082,6 +1129,7 @@ main()
 		}
 		draw_dot(px, py);
 		show_score();
+		show_timer();
 
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame */
@@ -1130,8 +1178,8 @@ main()
 
 					if (px == exit_gx &&
 					    py == exit_gy) {
-						/* Bonus: 50 pts for escaping */
-						score += 50;
+						/* Bonus: 50 pts + 1 per second remaining */
+						score += 50 + timer_sec;
 						win_cut_scene();
 						fgetc_cons();
 						break;
@@ -1153,6 +1201,28 @@ main()
 					for (ei = 0; ei < num_enemies; ei++)
 						if (enx[ei] == px && eny[ei] == py)
 							caught = 1;
+				}
+			}
+
+			/* --- Timer countdown --- */
+			timer_frac--;
+			if (timer_frac == 0) {
+				timer_frac = 50;
+				if (timer_sec > 0) {
+					timer_sec--;
+					show_timer();
+					if (timer_sec == 10)
+						zx_border(INK_RED);
+					if (timer_sec == 0) {
+						time_up_cut_scene();
+						fgetc_cons();
+						rank = update_hiscores();
+						show_hiscores(rank);
+						score = 0;
+						level = 0;
+						game_over = 1;
+						break;
+					}
 				}
 			}
 
