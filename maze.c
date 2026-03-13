@@ -146,19 +146,6 @@ void set_attr(unsigned char row, unsigned char col,
 	*p = attr;
 }
 
-/* Draw a brick-textured 8x8 block at screen char (sr, sc) */
-void draw_brick(unsigned char sr, unsigned char sc)
-{
-	unsigned char *base;
-	unsigned char i;
-	base = (unsigned char *)SCR_ADDR(sr, sc);
-	for (i = 0; i < 8; i++) {
-		*base = brick[i];
-		SC_NEXT_LINE(base);
-	}
-	set_attr(sr, sc, WALL_ATTR);
-}
-
 /* Clear all pixel data (6144 bytes at 16384) */
 void clear_pixels()
 {
@@ -266,6 +253,8 @@ void add_extra_passages()
 		walls[y + 1][x] &= ~1;  /* right */
 	}
 }
+
+void draw_brick(unsigned char sr, unsigned char sc);
 
 void draw_maze()
 {
@@ -402,6 +391,12 @@ void snd_win()
 	intrinsic_ei();
 	bit_beep(30, 80);
 	intrinsic_ei();
+}
+
+/* Draw a brick-textured 8x8 block at screen char (sr, sc) */
+void draw_brick(unsigned char sr, unsigned char sc)
+{
+	draw_sprite(sr, sc, brick, WALL_ATTR);
 }
 
 void draw_enemy(unsigned char gx, unsigned char gy)
