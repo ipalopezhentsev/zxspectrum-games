@@ -41,4 +41,6 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 ## TODO
 
 - speed up enemies with level?
-- introduce asm inserts in inner loops?
++ introduce asm inserts in inner loops?
+- title page
+- joysticks?
