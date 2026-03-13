@@ -46,3 +46,17 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 - joysticks?
 - show zoomed location of player on start
 - remove D button and its stats
+- web emul
+- don't open exit until min coins collected?
+- introduce delay for studying level - can start with zoom on player then places enemies one by one with stumping sound
+- ay effects/music
+- prefer unsigned to signed and char to int
+- pixel scrolling (with masks?! - if we add background to maze)
+- player figure -> man with several movement phases
+- use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
+// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
+arch/zx/sp1.h - SP1 software sprite engine for zx
+input.h - direct interface with user-input devices (keyboard, joystick, mouse)
+sound/aywyz.h - WYZ tracker for AY819x sound chips
+sound/bit.h - audio generation functions using a 1-bit device
+stdlib.h - general utilities (sorting, number↔ascii, !!!!random numbers, …)

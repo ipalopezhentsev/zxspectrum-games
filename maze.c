@@ -48,7 +48,7 @@ unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char coinmap[ROWS * COLS];
-int score;
+uint score;
 unsigned char coins_left;
 unsigned char level;
 unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard, 4=Nightmare */
@@ -710,7 +710,8 @@ void show_hiscores(char rank)
 	clear_pixels();
 	zx_cls_attr(PAPER_BLACK | INK_WHITE);
 	int len = sprintf(txt_buffer, "-= HIGH SCORES =-");
-	gotoxy(center_x(len), 1); printf(txt_buffer);
+	gotoxy(center_x(len), 1); 
+	printf(txt_buffer);
 
 	for (i = 0; i < NUM_HISCORES; i++) {
 		r = 3 + (i << 1);
@@ -930,7 +931,7 @@ int enemy_bfs(int exx, int eyy)
 
 	/* Cleanup: zero visited entries */
 	{
-		int i;
+		uint i;
 		for (i = 0; i < bfs_tail_g; i++)
 			vis[stk[i]] = 0;
 	}
@@ -1000,10 +1001,10 @@ int enemy_manhattan(int exx, int eyy)
 /* Move enemy n one step.
    At odd position (maze cell): use cached BFS, recalc, or random.
    At even position (corridor): continue in same direction. */
-void move_enemy(int n)
+void move_enemy(uchar n)
 {
-	int dir;
-	int old_ex, old_ey;
+	char dir;
+	uchar old_ex, old_ey;
 	int other;
 	unsigned char attr;
 
@@ -1013,7 +1014,7 @@ void move_enemy(int n)
 
 	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — chase_pct% chase, rest random */
-		if ((int)(rng() % 100) < chase_pct) {
+		if ((uint)(rng() % 100) < chase_pct) {
 			dir = enemy_manhattan(old_ex, old_ey);
 			if (dir < 0)
 				dir = enemy_bfs(old_ex, old_ey);
@@ -1039,7 +1040,7 @@ void move_enemy(int n)
 	if (old_ex == px && old_ey == py)
 		draw_dot(px, py);
 	{
-		int oi;
+		uchar oi;
 		unsigned char oa;
 		for (oi = 0; oi < num_enemies; oi++) {
 			if (oi == n) continue;
@@ -1052,7 +1053,7 @@ void move_enemy(int n)
 	/* Redraw coin if enemy left a coin cell (coin may still exist
 	   if enemy arrived from a corridor step, not a cell center) */
 	if ((old_ex & 1) && (old_ey & 1)) {
-		int ccx, ccy;
+		uchar ccx, ccy;
 		ccx = old_ex >> 1;
 		ccy = old_ey >> 1;
 		if (coinmap[ccy * COLS + ccx])
@@ -1061,7 +1062,7 @@ void move_enemy(int n)
 
 	/* Enemy eats coin if it lands on one */
 	if ((enx[n] & 1) && (eny[n] & 1)) {
-		int ccx, ccy;
+		uchar ccx, ccy;
 		ccx = enx[n] >> 1;
 		ccy = eny[n] >> 1;
 		if (coinmap[ccy * COLS + ccx]) {
