@@ -40,11 +40,8 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 
 ## TODO
 
-- //TODO: after first win second level always starts with 42
-- on long key press enemies stop
 - add more entropy to levels
 - randomize exit
 - introduce complexity level for a maze and increase it
 - speed up enemies with level?
 - introduce asm inserts in inner loops?
-- 

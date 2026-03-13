@@ -83,6 +83,25 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 - Text-based separators (`---`) are more reliable than pixel separator lines.
 - `plot()`/`unplot()` can corrupt pixel data and attributes unpredictably — prefer direct screen memory writes for game sprites (see above)
 
+## Game loop and input — frame-based design
+
+### Frame-synced main loop
+- Use `intrinsic_halt()` (from `<intrinsic.h>`) at the top of each game loop iteration to sync to the 50Hz interrupt. Each iteration = exactly one frame (20ms)
+- This gives consistent, predictable timing for all game mechanics
+
+### Keyboard input
+- `getk()` reads from system variable 23560, updated by the ROM interrupt at 50Hz. Good for game input — fast, no debounce overhead
+- `getk_inkey()` scans keyboard hardware directly via I/O port $FE — responds instantly to physical key state, with debouncing. Better for "press any key" / RNG seeding (where you need precise timing), worse for game controls (debounce adds latency, rejects simultaneous keys)
+- For movement: read `getk()` each frame, use a frame counter for key repeat delay (e.g. `KEY_REPEAT = 4` frames = 80ms between moves while held). Reset delay to 0 on key release for instant response to new presses
+
+### Enemy/timer independence
+- **Never reset the enemy tick counter when the player moves.** This causes enemies to freeze while the player holds a key
+- Enemy movement and player input must run on independent frame counters — both increment every frame regardless of what the other does
+
+### Sound and blocking
+- `bit_beep()` blocks the CPU and disables interrupts. Always call `intrinsic_ei()` after to re-enable interrupts
+- Blocking sound during gameplay freezes everything — keep beeps very short (duration 0 or 1)
+
 ## sccz80 compiler bugs — CRITICAL
 
 ### `unsigned char` locals corrupted across function calls

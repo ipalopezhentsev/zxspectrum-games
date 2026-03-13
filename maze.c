@@ -786,8 +786,9 @@ void game_over_cut_scene()
 	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
 }
 
-/* Enemy move interval — number of main loop ticks between moves */
-#define ENEMY_TICK 300
+/* Frame-based timing (1 frame = 20ms at 50Hz) */
+#define ENEMY_FRAMES  6   /* enemy moves every 6 frames = 120ms */
+#define KEY_REPEAT    4   /* held key repeats every 4 frames = 80ms */
 
 main()
 {
@@ -796,6 +797,7 @@ main()
 	int caught;
 	unsigned int tick;
 	int rank;
+	unsigned int key_delay;
 
 	/* Initialize high scores */
 	for (rank = 0; rank < NUM_HISCORES; rank++) {
@@ -805,22 +807,19 @@ main()
 	level = 0;
 	score = 0;
 
+	/* Seed RNG once from first keypress timing */
+	rseed = 0;
+	while (!getk_inkey())
+		rseed++;
+	while (getk()) ;
+	if (rseed == 0) rseed = 42;
+
 	while (1) {
 		zx_border(INK_BLACK);
-
-		/* Seed RNG from keypress timing */
-		rseed = 0;
-		//simple getk() always leads to 42
-		while (!getk_inkey())
-			rseed++;
-		while (getk()) ;
-		//TODO: after first win second level always starts with 42
-		if (rseed == 0) rseed = 42;
 
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
-		printf("rseed: %d", rseed);
 		int len = sprintf(txt_buffer, "MAZE Level %d  O/P/Q/A", level);
 		gotoxy(center_x(len), 23); printf(txt_buffer);
 
@@ -834,6 +833,7 @@ main()
 		random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
 		caught = 0;
 		tick = 0;
+		key_delay = 0;
 		last_edir_arr[0] = 0;
 		last_edir_arr[1] = 0;
 
@@ -846,15 +846,28 @@ main()
 		show_score();
 
 		while (1) {
+			intrinsic_halt();  /* sync to 50Hz frame */
+
+			/* --- Player input --- */
 			k = getk();
 			dx = 0;
 			dy = 0;
-			if (k == 'o' || k == 'O') dx = -1;
-			if (k == 'p' || k == 'P') dx = 1;
-			if (k == 'q' || k == 'Q') dy = -1;
-			if (k == 'a' || k == 'A') dy = 1;
+
+			if (k) {
+				if (key_delay > 0) {
+					key_delay--;
+				} else {
+					if (k == 'o' || k == 'O') dx = -1;
+					if (k == 'p' || k == 'P') dx = 1;
+					if (k == 'q' || k == 'Q') dy = -1;
+					if (k == 'a' || k == 'A') dy = 1;
+				}
+			} else {
+				key_delay = 0;
+			}
 
 			if (dx || dy) {
+				key_delay = KEY_REPEAT;
 				if (can_move(dx, dy)) {
 					erase_dot(px, py);
 					px += dx;
@@ -882,21 +895,15 @@ main()
 						fgetc_cons();
 						break;
 					}
-
 					snd_step();
-					tick = 0; /* reset tick so enemy doesn't
-					             move right after player */
 				} else {
 					snd_bump();
 				}
-
-				/* Wait for key release */
-				while (getk()) ;
 			}
 
-			/* Enemy moves on its own timer */
+			/* --- Enemy moves on independent timer --- */
 			tick++;
-			if (tick >= ENEMY_TICK) {
+			if (tick >= ENEMY_FRAMES) {
 				tick = 0;
 				move_enemy(0);
 				move_enemy(1);
