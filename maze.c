@@ -42,6 +42,8 @@ unsigned char wallmap[EROWS * ECOLS];
 unsigned char px, py;    /* player position in expanded grid */
 unsigned char enx[4], eny[4];    /* enemy positions in expanded grid */
 unsigned char last_edir_arr[4];  /* last direction each enemy moved */
+unsigned char enemy_next;        /* round-robin: which enemy moves next */
+unsigned int enemy_accum;        /* Bresenham accumulator for spreading */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
@@ -65,6 +67,15 @@ unsigned char hilevel[NUM_HISCORES];
 /* Timer state */
 unsigned int timer_sec;    /* seconds remaining */
 unsigned char timer_frac;  /* frame counter within current second (0-49) */
+
+/* Frame timing debug metrics */
+unsigned int dbg_slow;       /* total slow frames (took >1 interrupt) */
+unsigned int dbg_worst;      /* worst frame time in interrupts */
+unsigned int dbg_last_frames; /* FRAMES counter after previous halt */
+unsigned char dbg_enabled;   /* 1 = show metrics on row 1 */
+unsigned char dbg_w_enemy;   /* worst frames spent in enemy tick */
+unsigned char dbg_w_input;   /* worst frames spent in player input */
+unsigned char dbg_w_timer;   /* worst frames spent in timer/display */
 
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
@@ -646,8 +657,23 @@ void show_timer()
 	len = sprintf(txt_buffer, "TIME %d:%02d", m, s);
 	gotoxy(center_x(len), 0); printf(txt_buffer);
 	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
-	for (c = 12; c < 20; c++)
-		set_attr(0, c, attr);
+	if (timer_sec <= 10 || timer_sec == time_limit) {
+		for (c = 12; c < 20; c++)
+			set_attr(0, c, attr);
+	}
+}
+
+/* Show debug frame timing on row 1 */
+void show_debug()
+{
+	int len, c;
+	if (!dbg_enabled) return;
+	len = sprintf(txt_buffer, "S:%u W:%u E:%u I:%u T:%u",
+		dbg_slow, dbg_worst,
+		dbg_w_enemy, dbg_w_input, dbg_w_timer);
+	gotoxy(0, 1); printf(txt_buffer);
+	for (c = 0; c < len; c++)
+		set_attr(1, c, BRIGHT | INK_CYAN | PAPER_BLACK);
 }
 
 /* Update high scores table, return rank (0-based) or -1 */
@@ -730,7 +756,7 @@ int enemy_bfs(int exx, int eyy)
 	stk[tail++] = ci;
 	vis[ci] = 5;
 
-	while (head < tail) {
+	while (head < tail && head < 40) {
 		ci = stk[head++];
 
 		if (ci == efi) {
@@ -1017,6 +1043,7 @@ main()
 	}
 	level = 0;
 	score = 0;
+	dbg_enabled = 0;
 
 	/* Init BFS lookup tables (avoids Z80 division by 14 in inner loop) */
 	for (rank = 0; rank < ROWS * COLS; rank++) {
@@ -1148,6 +1175,8 @@ main()
 		caught = 0;
 		tick = 0;
 		key_delay = 0;
+		enemy_next = 0;
+		enemy_accum = 0;
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		{
@@ -1155,6 +1184,12 @@ main()
 			for (ei = 0; ei < num_enemies; ei++)
 				last_edir_arr[ei] = 0;
 		}
+
+		dbg_slow = 0;
+		dbg_worst = 0;
+		dbg_w_enemy = 0;
+		dbg_w_input = 0;
+		dbg_w_timer = 0;
 
 		/* Place coins and draw everything */
 		place_coins();
@@ -1171,15 +1206,49 @@ main()
 		show_score();
 		show_timer();
 
+		dbg_last_frames = *((unsigned int *)23672u);
+
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame */
 
+			/* --- Frame timing debug --- */
+			{
+				unsigned int now, elapsed;
+				now = *((unsigned int *)23672u);
+				elapsed = now - dbg_last_frames;
+				dbg_last_frames = now;
+				if (elapsed > 1) {
+					dbg_slow += elapsed - 1;
+					if (elapsed > dbg_worst)
+						dbg_worst = elapsed;
+				}
+				/* Update display every 50 frames (~1 sec) */
+				if ((now & 63) == 0)
+					show_debug();
+			}
+
 			/* --- Player input --- */
+			{
+				unsigned int dbg_t0, dbg_t1, dbg_dt;
+				dbg_t0 = *((unsigned int *)23672u);
+
 			k = getk();
 			dx = 0;
 			dy = 0;
 
 			if (k) {
+				if (k == 'd' || k == 'D') {
+					dbg_enabled = !dbg_enabled;
+					if (!dbg_enabled) {
+						/* Clear debug row */
+						int dc;
+						for (dc = 0; dc < 20; dc++)
+							set_attr(1, dc, CORR_ATTR);
+					} else {
+						show_debug();
+					}
+					k = 0;  /* consume key */
+				}
 				if (key_delay > 0) {
 					key_delay--;
 				} else {
@@ -1230,21 +1299,43 @@ main()
 				}
 			}
 
-			/* --- Enemy moves on independent timer --- */
-			tick++;
-			if (tick >= enemy_frames) {
-				tick = 0;
-				{
-					int ei;
-					for (ei = 0; ei < num_enemies; ei++)
-						move_enemy(ei);
-					for (ei = 0; ei < num_enemies; ei++)
-						if (enx[ei] == px && eny[ei] == py)
-							caught = 1;
-				}
+				dbg_t1 = *((unsigned int *)23672u);
+				dbg_dt = dbg_t1 - dbg_t0;
+				if (dbg_dt > dbg_w_input)
+					dbg_w_input = dbg_dt;
+			}
+
+			/* --- Enemy moves spread across frames --- */
+			/* Bresenham: accumulate num_enemies per frame, fire one
+			   move each time accum >= enemy_frames.  Over enemy_frames
+			   frames exactly num_enemies moves happen (one per enemy),
+			   but at most 1-2 per frame instead of all N at once. */
+			{
+				unsigned int dbg_t0, dbg_t1, dbg_dt;
+				dbg_t0 = *((unsigned int *)23672u);
+
+			enemy_accum += num_enemies;
+			while (enemy_accum >= enemy_frames) {
+				enemy_accum -= enemy_frames;
+				move_enemy(enemy_next);
+				if (enx[enemy_next] == px && eny[enemy_next] == py)
+					caught = 1;
+				enemy_next++;
+				if (enemy_next >= num_enemies)
+					enemy_next = 0;
+			}
+
+				dbg_t1 = *((unsigned int *)23672u);
+				dbg_dt = dbg_t1 - dbg_t0;
+				if (dbg_dt > dbg_w_enemy)
+					dbg_w_enemy = dbg_dt;
 			}
 
 			/* --- Timer countdown --- */
+			{
+				unsigned int dbg_t0, dbg_t1, dbg_dt;
+				dbg_t0 = *((unsigned int *)23672u);
+
 			timer_frac--;
 			if (timer_frac == 0) {
 				timer_frac = 50;
@@ -1264,6 +1355,12 @@ main()
 						break;
 					}
 				}
+			}
+
+				dbg_t1 = *((unsigned int *)23672u);
+				dbg_dt = dbg_t1 - dbg_t0;
+				if (dbg_dt > dbg_w_timer)
+					dbg_w_timer = dbg_dt;
 			}
 
 			if (caught) {
