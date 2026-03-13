@@ -40,8 +40,5 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 
 ## TODO
 
-- add more entropy to levels
-- introduce complexity level for a maze and increase it
 - speed up enemies with level?
 - introduce asm inserts in inner loops?
-+ coins are too "grid-like"

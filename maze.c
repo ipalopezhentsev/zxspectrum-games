@@ -40,8 +40,8 @@ unsigned char walls[ROWS][COLS];
 /* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
 unsigned char wallmap[EROWS * ECOLS];
 unsigned char px, py;    /* player position in expanded grid */
-unsigned char enx[2], eny[2];    /* enemy positions in expanded grid */
-unsigned char last_edir_arr[2];  /* last direction each enemy moved */
+unsigned char enx[3], eny[3];    /* enemy positions in expanded grid */
+unsigned char last_edir_arr[3];  /* last direction each enemy moved */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
@@ -49,6 +49,13 @@ unsigned char coinmap[ROWS * COLS];
 int score;
 unsigned char coins_left;
 unsigned char level;
+unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard */
+unsigned char num_enemies;   /* 1, 2, or 3 */
+unsigned char enemy_frames;  /* frames between enemy moves */
+unsigned char chase_pct;     /* % chance enemy uses BFS chase */
+unsigned char extra_wall_pct; /* 1-in-N chance to remove a wall */
+unsigned char extra_halls_base; /* base number of extra halls */
+unsigned char extra_halls_rng;  /* random additional halls */
 
 /* High scores table */
 int hiscores[NUM_HISCORES];
@@ -64,6 +71,7 @@ char txt_buffer[TEXT_SCR_WIDTH + 1];
 #define PLAYER_ATTR (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
 #define ENEMY2_ATTR (BRIGHT | INK_MAGENTA | PAPER_BLACK)
+#define ENEMY3_ATTR (BRIGHT | INK_CYAN | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
@@ -238,18 +246,17 @@ void add_extra_passages()
 {
 	int x, y, i, n;
 
-	/* Pass 1: randomly remove ~20% of remaining walls → loops */
+	/* Pass 1: randomly remove walls → loops (difficulty controls frequency) */
 	for (y = 0; y < ROWS; y++)
 		for (x = 0; x < COLS; x++) {
-			if (x < COLS - 1 && (walls[y][x] & 1) && rng() % 5 == 0)
+			if (x < COLS - 1 && (walls[y][x] & 1) && rng() % extra_wall_pct == 0)
 				walls[y][x] &= ~1;
-			if (y < ROWS - 1 && (walls[y][x] & 2) && rng() % 5 == 0)
+			if (y < ROWS - 1 && (walls[y][x] & 2) && rng() % extra_wall_pct == 0)
 				walls[y][x] &= ~2;
 		}
 
-	/* Pass 2: create a few 2x2 halls by removing shared walls
-	   between a 2x2 block of maze cells */
-	n = 3 + rng() % 3;  /* 3-5 halls */
+	/* Pass 2: create 2x2 halls (difficulty controls count) */
+	n = extra_halls_base + rng() % (extra_halls_rng + 1);
 	for (i = 0; i < n; i++) {
 		x = rng() % (COLS - 1);
 		y = rng() % (ROWS - 1);
@@ -435,8 +442,13 @@ void place_coins()
 		/* Skip player, exit, enemies */
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
-		if (gx == enx[0] && gy == eny[0]) continue;
-		if (gx == enx[1] && gy == eny[1]) continue;
+		{
+			int skip, ei;
+			skip = 0;
+			for (ei = 0; ei < num_enemies; ei++)
+				if (gx == enx[ei] && gy == eny[ei]) skip = 1;
+			if (skip) continue;
+		}
 		/* No adjacent coins — min 2-cell gap */
 		if (cx > 0 && coinmap[idx - 1]) continue;
 		if (cx < COLS - 1 && coinmap[idx + 1]) continue;
@@ -633,11 +645,11 @@ void move_enemy(int n)
 
 	old_ex = enx[n];
 	old_ey = eny[n];
-	attr = (n == 0) ? ENEMY_ATTR : ENEMY2_ATTR;
+	attr = (n == 0) ? ENEMY_ATTR : (n == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
 
 	if ((old_ex & 1) && (old_ey & 1)) {
-		/* At maze cell — 25% chase, 75% random */
-		if (rng() % 4 == 0)
+		/* At maze cell — chase_pct% chase, rest random */
+		if ((int)(rng() % 100) < chase_pct)
 			dir = enemy_bfs(old_ex, old_ey);
 		else
 			dir = enemy_random_dir(old_ex, old_ey);
@@ -660,10 +672,17 @@ void move_enemy(int n)
 		draw_exit(exit_gx, exit_gy);
 	if (old_ex == px && old_ey == py)
 		draw_dot(px, py);
-	other = 1 - n;
-	if (old_ex == enx[other] && old_ey == eny[other])
-		draw_sprite(SROW(eny[other]), SCOL(enx[other]), spr_enemy,
-		            (other == 0) ? ENEMY_ATTR : ENEMY2_ATTR);
+	{
+		int oi;
+		unsigned char oa;
+		for (oi = 0; oi < num_enemies; oi++) {
+			if (oi == n) continue;
+			if (old_ex == enx[oi] && old_ey == eny[oi]) {
+				oa = (oi == 0) ? ENEMY_ATTR : (oi == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
+				draw_sprite(SROW(eny[oi]), SCOL(enx[oi]), spr_enemy, oa);
+			}
+		}
+	}
 	/* Redraw coin if enemy left a coin cell (coin may still exist
 	   if enemy arrived from a corridor step, not a cell center) */
 	if ((old_ex & 1) && (old_ey & 1)) {
@@ -794,7 +813,6 @@ void game_over_cut_scene()
 }
 
 /* Frame-based timing (1 frame = 20ms at 50Hz) */
-#define ENEMY_FRAMES  6   /* enemy moves every 6 frames = 120ms */
 #define KEY_REPEAT    4   /* held key repeats every 4 frames = 80ms */
 
 main()
@@ -805,6 +823,7 @@ main()
 	unsigned int tick;
 	int rank;
 	unsigned int key_delay;
+	int game_over;
 
 	/* Initialize high scores */
 	for (rank = 0; rank < NUM_HISCORES; rank++) {
@@ -814,21 +833,86 @@ main()
 	level = 0;
 	score = 0;
 
-	/* Seed RNG once from first keypress timing */
 	rseed = 0;
-	while (!getk_inkey())
-		rseed++;
-	while (getk()) ;
-	if (rseed == 0) rseed = 42;
 
+	/* Difficulty selection (first pick also seeds RNG) */
+	while (1) {
+		clear_pixels();
+		zx_cls_attr(PAPER_BLACK | INK_WHITE);
+		{
+			int len, c;
+			len = sprintf(txt_buffer, "-= MAZE RUNNER =-");
+			gotoxy(center_x(len), 3); printf(txt_buffer);
+			for (c = 6; c < 26; c++)
+				set_attr(3, c, TITLE_ATTR);
+
+			len = sprintf(txt_buffer, "Select difficulty:");
+			gotoxy(center_x(len), 7); printf(txt_buffer);
+
+			len = sprintf(txt_buffer, "1 - Easy");
+			gotoxy(center_x(len), 10); printf(txt_buffer);
+			for (c = 12; c < 20; c++)
+				set_attr(10, c, BRIGHT | INK_GREEN | PAPER_BLACK);
+
+			len = sprintf(txt_buffer, "2 - Normal");
+			gotoxy(center_x(len), 12); printf(txt_buffer);
+			for (c = 11; c < 21; c++)
+				set_attr(12, c, BRIGHT | INK_YELLOW | PAPER_BLACK);
+
+			len = sprintf(txt_buffer, "3 - Hard");
+			gotoxy(center_x(len), 14); printf(txt_buffer);
+			for (c = 12; c < 20; c++)
+				set_attr(14, c, BRIGHT | INK_RED | PAPER_BLACK);
+		}
+
+		/* Wait for 1/2/3; spin increments rseed for RNG seeding */
+		k = 0;
+		while (k != '1' && k != '2' && k != '3') {
+			rseed++;
+			k = getk_inkey();
+		}
+		while (getk()) ;  /* wait for key release */
+		if (rseed == 0) rseed = 42;
+		difficulty = k - '0';
+
+		if (difficulty == 1) {
+			num_enemies = 1;
+			enemy_frames = 8;
+			chase_pct = 10;
+			extra_wall_pct = 3;   /* 1-in-3 = ~33% walls removed */
+			extra_halls_base = 5;
+			extra_halls_rng = 3;  /* 5-8 halls */
+		} else if (difficulty == 2) {
+			num_enemies = 2;
+			enemy_frames = 6;
+			chase_pct = 25;
+			extra_wall_pct = 5;   /* 1-in-5 = ~20% walls removed */
+			extra_halls_base = 3;
+			extra_halls_rng = 2;  /* 3-5 halls */
+		} else {
+			num_enemies = 3;
+			enemy_frames = 4;
+			chase_pct = 50;
+			extra_wall_pct = 8;   /* 1-in-8 = ~12% walls removed */
+			extra_halls_base = 1;
+			extra_halls_rng = 1;  /* 1-2 halls */
+		}
+
+	game_over = 0;
 	while (1) {
 		zx_border(INK_BLACK);
 
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		clear_pixels();
-		int len = sprintf(txt_buffer, "MAZE Level %d  O/P/Q/A", level);
-		gotoxy(center_x(len), 23); printf(txt_buffer);
+		{
+			int len;
+			char *dname;
+			dname = (difficulty == 1) ? "Easy" :
+			        (difficulty == 2) ? "Normal" : "Hard";
+			len = sprintf(txt_buffer, "Lv%d [%s]  O/P/Q/A", level, dname);
+			gotoxy(center_x(len), 23); printf(txt_buffer);
+		}
 
 		generate_maze();
 		add_extra_passages();
@@ -838,18 +922,30 @@ main()
 		random_start(&exit_gx, &exit_gy, 255, 255, 255, 255);
 		random_start(&px, &py, exit_gx, exit_gy, 255, 255);
 		random_start(&enx[0], &eny[0], px, py, exit_gx, exit_gy);
-		random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
+		if (num_enemies > 1)
+			random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
+		if (num_enemies > 2)
+			random_start(&enx[2], &eny[2], px, py, enx[1], eny[1]);
 		caught = 0;
 		tick = 0;
 		key_delay = 0;
-		last_edir_arr[0] = 0;
-		last_edir_arr[1] = 0;
+		{
+			int ei;
+			for (ei = 0; ei < num_enemies; ei++)
+				last_edir_arr[ei] = 0;
+		}
 
 		/* Place coins and draw everything */
 		place_coins();
 		draw_exit(exit_gx, exit_gy);
-		draw_sprite(SROW(eny[0]), SCOL(enx[0]), spr_enemy, ENEMY_ATTR);
-		draw_sprite(SROW(eny[1]), SCOL(enx[1]), spr_enemy, ENEMY2_ATTR);
+		{
+			int ei;
+			unsigned char ea;
+			for (ei = 0; ei < num_enemies; ei++) {
+				ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR : ENEMY3_ATTR;
+				draw_sprite(SROW(eny[ei]), SCOL(enx[ei]), spr_enemy, ea);
+			}
+		}
 		draw_dot(px, py);
 		show_score();
 
@@ -891,9 +987,12 @@ main()
 					}
 
 					/* Player walked onto enemy? */
-					if ((px == enx[0] && py == eny[0]) ||
-					    (px == enx[1] && py == eny[1]))
-						caught = 1;
+					{
+						int ei;
+						for (ei = 0; ei < num_enemies; ei++)
+							if (px == enx[ei] && py == eny[ei])
+								caught = 1;
+					}
 
 					if (px == exit_gx &&
 					    py == exit_gy) {
@@ -911,14 +1010,16 @@ main()
 
 			/* --- Enemy moves on independent timer --- */
 			tick++;
-			if (tick >= ENEMY_FRAMES) {
+			if (tick >= enemy_frames) {
 				tick = 0;
-				move_enemy(0);
-				move_enemy(1);
-
-				if ((enx[0] == px && eny[0] == py) ||
-				    (enx[1] == px && eny[1] == py))
-					caught = 1;
+				{
+					int ei;
+					for (ei = 0; ei < num_enemies; ei++)
+						move_enemy(ei);
+					for (ei = 0; ei < num_enemies; ei++)
+						if (enx[ei] == px && eny[ei] == py)
+							caught = 1;
+				}
 			}
 
 			if (caught) {
@@ -929,8 +1030,11 @@ main()
 				/* Reset for new game */
 				score = 0;
 				level = 0;
+				game_over = 1;
 				break;
 			}
 		}
+		if (game_over) break;
 	}
+	} /* end difficulty selection loop */
 }
