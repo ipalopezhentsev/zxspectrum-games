@@ -159,8 +159,8 @@ void clear_pixels()
 
 unsigned int rng()
 {
-	rseed = rseed * 181 + 359;
-	return rseed >> 2;
+	rseed = rseed * 25173u + 13849u;
+	return (rseed >> 1) ^ rseed;
 }
 
 /* Visited flags and explicit stack for DFS and BFS.
@@ -418,25 +418,34 @@ void draw_coin(unsigned char cx, unsigned char cy)
 /* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
 void place_coins()
 {
-	int cx, cy, gx, gy;
+	int target, attempts, idx, cx, cy, gx, gy;
 	coins_left = 0;
 	memset(coinmap, 0, ROWS * COLS);
 
-	for (cy = 0; cy < ROWS; cy++)
-		for (cx = 0; cx < COLS; cx++) {
-			gx = cx * 2 + 1;
-			gy = cy * 2 + 1;
-			/* Skip player, exit, enemies */
-			if (gx == px && gy == py) continue;
-			if (gx == exit_gx && gy == exit_gy) continue;
-			if (gx == enx[0] && gy == eny[0]) continue;
-			if (gx == enx[1] && gy == eny[1]) continue;
-			if (rng() % 5 < 2) {
-				coinmap[cy * COLS + cx] = 1;
-				coins_left++;
-				draw_coin(cx, cy);
-			}
-		}
+	target = (ROWS * COLS) * 2 / 5;
+	attempts = target * 4;
+	while (coins_left < target && attempts > 0) {
+		attempts--;
+		idx = rng() % (ROWS * COLS);
+		if (coinmap[idx]) continue;
+		cy = idx / COLS;
+		cx = idx - cy * COLS;
+		gx = cx * 2 + 1;
+		gy = cy * 2 + 1;
+		/* Skip player, exit, enemies */
+		if (gx == px && gy == py) continue;
+		if (gx == exit_gx && gy == exit_gy) continue;
+		if (gx == enx[0] && gy == eny[0]) continue;
+		if (gx == enx[1] && gy == eny[1]) continue;
+		/* No adjacent coins — min 2-cell gap */
+		if (cx > 0 && coinmap[idx - 1]) continue;
+		if (cx < COLS - 1 && coinmap[idx + 1]) continue;
+		if (cy > 0 && coinmap[idx - COLS]) continue;
+		if (cy < ROWS - 1 && coinmap[idx + COLS]) continue;
+		coinmap[idx] = 1;
+		coins_left++;
+		draw_coin(cx, cy);
+	}
 }
 
 /* Check and collect coin at expanded grid position (gx,gy) */

@@ -44,4 +44,4 @@ This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum 
 - introduce complexity level for a maze and increase it
 - speed up enemies with level?
 - introduce asm inserts in inner loops?
-- coins are to "grid-like"
++ coins are too "grid-like"
