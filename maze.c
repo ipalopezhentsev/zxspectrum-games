@@ -81,6 +81,10 @@ unsigned char ds_col;
    eliminates expensive Z80 division by 14 in the BFS inner loop */
 unsigned char bfs_row[ROWS * COLS];
 unsigned char bfs_col[ROWS * COLS];
+/* Precomputed row * COLS: eliminates Z80 multiply by 14 */
+unsigned char row_x_cols[ROWS];
+/* Precomputed row * ECOLS: eliminates Z80 multiply by 29 */
+unsigned int erow_x_ecols[EROWS];
 
 #define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
@@ -358,7 +362,8 @@ void draw_sprite(unsigned char sr, unsigned char sc,
 {
 	ds_scr = SCR_ADDR(sr, sc);
 	ds_spr_ptr = spr;
-	ds_attr_a = ATTR_BASE + (unsigned int)sr * 32 + sc;
+	ds_row = sr;
+	ds_col = sc;
 	ds_attr_v = attr;
 
 #asm
@@ -397,8 +402,20 @@ void draw_sprite(unsigned char sr, unsigned char sc,
 	ld a, (de)
 	ld (hl), a
 
-	; Set attribute byte directly
-	ld hl, (_ds_attr_a)
+	; Compute attribute address: 22528 + sr * 32 + sc
+	ld a, (_ds_row)
+	ld l, a
+	ld h, 0
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl          ; HL = sr * 32
+	ld a, (_ds_col)
+	add a, l
+	ld l, a             ; HL = sr * 32 + sc
+	ld bc, 22528
+	add hl, bc          ; HL = attribute address
 	ld a, (_ds_attr_v)
 	ld (hl), a
 #endasm
@@ -490,7 +507,8 @@ void snd_win()
 void draw_brick(unsigned char sr, unsigned char sc)
 {
 	ds_scr = SCR_ADDR(sr, sc);
-	ds_attr_a = ATTR_BASE + (unsigned int)sr * 32 + sc;
+	ds_row = sr;
+	ds_col = sc;
 	ds_attr_v = WALL_ATTR;
 
 #asm
@@ -516,8 +534,20 @@ void draw_brick(unsigned char sr, unsigned char sc)
 	xor a
 	ld (hl), a
 
-	; Set wall attribute
-	ld hl, (_ds_attr_a)
+	; Compute attribute address: 22528 + sr * 32 + sc
+	ld a, (_ds_row)
+	ld l, a
+	ld h, 0
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	add hl, hl          ; HL = sr * 32
+	ld a, (_ds_col)
+	add a, l
+	ld l, a             ; HL = sr * 32 + sc
+	ld bc, 22528
+	add hl, bc          ; HL = attribute address
 	ld a, (_ds_attr_v)
 	ld (hl), a
 #endasm
@@ -586,7 +616,7 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
 	cx = gx >> 1;
 	cy = gy >> 1;
-	int idx=(unsigned int)cy * COLS + cx;
+	int idx=row_x_cols[cy] + cx;
 	if (coinmap[idx]) {
 		coinmap[idx] = 0;
 		coins_left--;
@@ -609,8 +639,10 @@ void show_timer()
 	int len, c;
 	unsigned int m, s;
 	unsigned char attr;
-	m = timer_sec / 60;
-	s = timer_sec - m * 60;
+	/* divmod 60 via subtraction — faster than library divide on Z80 */
+	s = timer_sec;
+	m = 0;
+	while (s >= 60) { s -= 60; m++; }
 	len = sprintf(txt_buffer, "TIME %d:%02d", m, s);
 	gotoxy(center_x(len), 0); printf(txt_buffer);
 	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
@@ -687,14 +719,14 @@ int enemy_bfs(int exx, int eyy)
 	ecx = exx >> 1;  ecy = eyy >> 1;
 	pcx = px >> 1;  pcy = py >> 1;
 
-	efi = ecy * COLS + ecx;
+	efi = row_x_cols[ecy] + ecx;
 
 	/* vis[] is pre-cleared after maze generation and cleaned up
 	   at the end of each BFS call — no per-call memset needed */
 
 	head = 0;
 	tail = 0;
-	ci = pcy * COLS + pcx;
+	ci = row_x_cols[pcy] + pcx;
 	stk[tail++] = ci;
 	vis[ci] = 5;
 
@@ -757,7 +789,7 @@ int enemy_bfs(int exx, int eyy)
 int enemy_random_dir(int exx, int eyy)
 {
 	int dirs[4];
-	int fi = eyy * ECOLS + exx;
+	int fi = erow_x_ecols[eyy] + exx;
 	int nd = 0;
 	if (!wallmap[fi - 1])     dirs[nd++] = 0;
 	if (!wallmap[fi + 1])     dirs[nd++] = 1;
@@ -860,7 +892,7 @@ void random_start(unsigned char *gx, unsigned char *gy,
 
 unsigned char can_move(char dx, char dy)
 {
-	return !wallmap[(unsigned int)(py + dy) * ECOLS + px + dx];
+	return !wallmap[erow_x_ecols[py + dy] + px + dx];
 }
 
 /* Draw a popup window background: rows 10-14, cols 5-26.
@@ -990,6 +1022,14 @@ main()
 	for (rank = 0; rank < ROWS * COLS; rank++) {
 		bfs_row[rank] = rank / COLS;
 		bfs_col[rank] = rank % COLS;
+	}
+	/* Init row*COLS lookup table (avoids Z80 multiply by 14) */
+	for (rank = 0; rank < ROWS; rank++) {
+		row_x_cols[rank] = rank * COLS;
+	}
+	/* Init row*ECOLS lookup table (avoids Z80 multiply by 29) */
+	for (rank = 0; rank < EROWS; rank++) {
+		erow_x_ecols[rank] = rank * ECOLS;
 	}
 
 	rseed = 0;
