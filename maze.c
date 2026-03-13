@@ -70,9 +70,8 @@ char txt_buffer[TEXT_SCR_WIDTH + 1];
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define HISCORE_ATTR (BRIGHT | INK_YELLOW | PAPER_BLACK)
 
-/* Exit position in expanded grid */
-#define EXIT_GX (2*COLS-1)
-#define EXIT_GY (2*ROWS-1)
+/* Exit position in expanded grid (randomized each level) */
+unsigned char exit_gx, exit_gy;
 
 /* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
 //don't remove formatting and binary constants, it's more readable this way
@@ -429,7 +428,7 @@ void place_coins()
 			gy = cy * 2 + 1;
 			/* Skip player, exit, enemies */
 			if (gx == px && gy == py) continue;
-			if (gx == EXIT_GX && gy == EXIT_GY) continue;
+			if (gx == exit_gx && gy == exit_gy) continue;
 			if (gx == enx[0] && gy == eny[0]) continue;
 			if (gx == enx[1] && gy == eny[1]) continue;
 			if (rng() % 5 < 2) {
@@ -648,8 +647,8 @@ void move_enemy(int n)
 	else if (dir == 3) eny[n]++;
 
 	/* Redraw exit/player/coin/other enemy if this enemy left their cell */
-	if (old_ex == EXIT_GX && old_ey == EXIT_GY)
-		draw_exit(EXIT_GX, EXIT_GY);
+	if (old_ex == exit_gx && old_ey == exit_gy)
+		draw_exit(exit_gx, exit_gy);
 	if (old_ex == px && old_ey == py)
 		draw_dot(px, py);
 	other = 1 - n;
@@ -694,8 +693,7 @@ void random_start(unsigned char *gx, unsigned char *gy,
 		*gx = (cx << 1) + 1;
 		*gy = (cy << 1) + 1;
 	} while ((*gx == ox1 && *gy == oy1) ||
-	         (*gx == ox2 && *gy == oy2) ||
-	         (*gx == EXIT_GX && *gy == EXIT_GY));
+	         (*gx == ox2 && *gy == oy2));
 }
 
 unsigned char can_move(char dx, char dy)
@@ -827,9 +825,10 @@ main()
 		add_extra_passages();
 		draw_maze();
 
-		/* Random starting positions */
-		random_start(&px, &py, 255, 255, 255, 255);
-		random_start(&enx[0], &eny[0], px, py, 255, 255);
+		/* Random starting positions: exit first so others avoid it */
+		random_start(&exit_gx, &exit_gy, 255, 255, 255, 255);
+		random_start(&px, &py, exit_gx, exit_gy, 255, 255);
+		random_start(&enx[0], &eny[0], px, py, exit_gx, exit_gy);
 		random_start(&enx[1], &eny[1], px, py, enx[0], eny[0]);
 		caught = 0;
 		tick = 0;
@@ -839,7 +838,7 @@ main()
 
 		/* Place coins and draw everything */
 		place_coins();
-		draw_exit(EXIT_GX, EXIT_GY);
+		draw_exit(exit_gx, exit_gy);
 		draw_sprite(SROW(eny[0]), SCOL(enx[0]), spr_enemy, ENEMY_ATTR);
 		draw_sprite(SROW(eny[1]), SCOL(enx[1]), spr_enemy, ENEMY2_ATTR);
 		draw_dot(px, py);
@@ -887,8 +886,8 @@ main()
 					    (px == enx[1] && py == eny[1]))
 						caught = 1;
 
-					if (px == EXIT_GX &&
-					    py == EXIT_GY) {
+					if (px == exit_gx &&
+					    py == exit_gy) {
 						/* Bonus: 50 pts for escaping */
 						score += 50;
 						win_cut_scene();
