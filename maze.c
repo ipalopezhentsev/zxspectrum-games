@@ -68,12 +68,6 @@ unsigned char hilevel[NUM_HISCORES];
 unsigned int timer_sec;    /* seconds remaining */
 unsigned char timer_frac;  /* frame counter within current second (0-49) */
 
-/* Frame timing debug metrics */
-unsigned int dbg_slow;       /* total slow frames (took >1 interrupt) */
-unsigned int dbg_worst;      /* worst frame time in interrupts */
-unsigned int dbg_last_frames; /* FRAMES counter after previous halt */
-unsigned char dbg_enabled;   /* 1 = show metrics on row 1 */
-
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
 
@@ -211,18 +205,6 @@ void set_attr(unsigned char row, unsigned char col,
 #endasm
 }
 
-/* Clear all pixel data (6144 bytes at 16384) */
-void clear_pixels()
-{
-	memset((unsigned char *)16384u, 0, 6144u);
-}
-
-unsigned int rng()
-{
-	rseed = rseed * 25173u + 13849u;
-	return (rseed >> 1) ^ rseed;
-}
-
 /* Visited flags and explicit stack for DFS and BFS.
    Sized for expanded grid (largest use case). */
 unsigned char vis[EROWS * ECOLS];
@@ -271,7 +253,7 @@ void generate_maze()
 
 		/* Shuffle directions */
 		for (i = nd - 1; i > 0; i--) {
-			j = rng() % (i + 1);
+			j = rand() % (i + 1);
 			t = dirs[i];
 			dirs[i] = dirs[j];
 			dirs[j] = t;
@@ -301,17 +283,17 @@ void add_extra_passages()
 	/* Pass 1: randomly remove walls → loops (difficulty controls frequency) */
 	for (y = 0; y < ROWS; y++)
 		for (x = 0; x < COLS; x++) {
-			if (x < COLS - 1 && (walls[y][x] & 1) && rng() % extra_wall_pct == 0)
+			if (x < COLS - 1 && (walls[y][x] & 1) && rand() % extra_wall_pct == 0)
 				walls[y][x] &= ~1;
-			if (y < ROWS - 1 && (walls[y][x] & 2) && rng() % extra_wall_pct == 0)
+			if (y < ROWS - 1 && (walls[y][x] & 2) && rand() % extra_wall_pct == 0)
 				walls[y][x] &= ~2;
 		}
 
 	/* Pass 2: create 2x2 halls (difficulty controls count) */
-	n = extra_halls_base + rng() % (extra_halls_rng + 1);
+	n = extra_halls_base + rand() % (extra_halls_rng + 1);
 	for (i = 0; i < n; i++) {
-		x = rng() % (COLS - 1);
-		y = rng() % (ROWS - 1);
+		x = rand() % (COLS - 1);
+		y = rand() % (ROWS - 1);
 		/* Remove walls between (x,y), (x+1,y), (x,y+1), (x+1,y+1) */
 		walls[y][x]     &= ~3;  /* right + bottom */
 		walls[y][x + 1] &= ~2;  /* bottom */
@@ -601,7 +583,7 @@ void place_coins()
 	attempts = target * 4;
 	while (coins_left < target && attempts > 0) {
 		attempts--;
-		idx = rng() % (ROWS * COLS);
+		idx = rand() % (ROWS * COLS);
 		if (coinmap[idx]) continue;
 		cy = idx / COLS;
 		cx = idx - cy * COLS;
@@ -671,17 +653,6 @@ void show_timer()
 	}
 }
 
-/* Show debug frame timing on row 1 */
-void show_debug()
-{
-	int len, c;
-	if (!dbg_enabled) return;
-	len = sprintf(txt_buffer, "SLOW:%u WORST:%u", dbg_slow, dbg_worst);
-	gotoxy(0, 1); printf(txt_buffer);
-	for (c = 0; c < len; c++)
-		set_attr(1, c, BRIGHT | INK_CYAN | PAPER_BLACK);
-}
-
 /* Update high scores table, return rank (0-based) or -1 */
 int update_hiscores()
 {
@@ -707,7 +678,6 @@ void show_hiscores(char rank)
 	int i, r, c;
 	unsigned char attr;
 
-	clear_pixels();
 	zx_cls_attr(PAPER_BLACK | INK_WHITE);
 	int len = sprintf(txt_buffer, "-= HIGH SCORES =-");
 	gotoxy(center_x(len), 1); 
@@ -957,7 +927,7 @@ int enemy_random_dir(int exx, int eyy)
 	if (!wallmap[fi - ECOLS]) dirs[nd++] = 2;
 	if (!wallmap[fi + ECOLS]) dirs[nd++] = 3;
 	if (nd == 0) return -1;
-	return dirs[rng() % nd];
+	return dirs[rand() % nd];
 }
 
 /* Try Manhattan direction toward player from (exx,eyy) on expanded grid.
@@ -1014,7 +984,7 @@ void move_enemy(uchar n)
 
 	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — chase_pct% chase, rest random */
-		if ((uint)(rng() % 100) < chase_pct) {
+		if ((uint)(rand() % 100) < chase_pct) {
 			dir = enemy_manhattan(old_ex, old_ey);
 			if (dir < 0)
 				dir = enemy_bfs(old_ex, old_ey);
@@ -1083,8 +1053,8 @@ void random_start(unsigned char *gx, unsigned char *gy,
 {
 	unsigned char cx, cy;
 	do {
-		cx = rng() % COLS;
-		cy = rng() % ROWS;
+		cx = rand() % COLS;
+		cy = rand() % ROWS;
 		*gx = (cx << 1) + 1;
 		*gy = (cy << 1) + 1;
 	} while ((*gx == ox1 && *gy == oy1) ||
@@ -1218,7 +1188,6 @@ main()
 	}
 	level = 0;
 	score = 0;
-	dbg_enabled = 0;
 
 	/* Init BFS lookup tables (avoids Z80 division by 14 in inner loop) */
 	for (rank = 0; rank < ROWS * COLS; rank++) {
@@ -1238,7 +1207,6 @@ main()
 
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
-		clear_pixels();
 		zx_cls_attr(PAPER_BLACK | INK_WHITE);
 		{
 			int len, c;
@@ -1279,6 +1247,7 @@ main()
 		}
 		while (getk()) ;  /* wait for key release */
 		if (rseed == 0) rseed = 42;
+		srand(rseed);
 		difficulty = k - '0';
 
 		if (difficulty == 1) {
@@ -1321,7 +1290,6 @@ main()
 
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
-		clear_pixels();
 		{
 			int len;
 			char *dname;
@@ -1361,9 +1329,6 @@ main()
 				last_edir_arr[ei] = 0;
 		}
 
-		dbg_slow = 0;
-		dbg_worst = 0;
-
 		/* Place coins and draw everything */
 		place_coins();
 		draw_exit(exit_gx, exit_gy);
@@ -1379,26 +1344,8 @@ main()
 		show_score();
 		show_timer();
 
-		dbg_last_frames = *((unsigned int *)23672u);
-
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame */
-
-			/* --- Frame timing debug --- */
-			{
-				unsigned int now, elapsed;
-				now = *((unsigned int *)23672u);
-				elapsed = now - dbg_last_frames;
-				dbg_last_frames = now;
-				if (elapsed > 1) {
-					dbg_slow += elapsed - 1;
-					if (elapsed > dbg_worst)
-						dbg_worst = elapsed;
-				}
-				/* Update display every 50 frames (~1 sec) */
-				if ((now & 63) == 0)
-					show_debug();
-			}
 
 			/* --- Player input --- */
 			k = getk();
@@ -1406,18 +1353,6 @@ main()
 			dy = 0;
 
 			if (k) {
-				if (k == 'd' || k == 'D') {
-					dbg_enabled = !dbg_enabled;
-					if (!dbg_enabled) {
-						/* Clear debug row */
-						int dc;
-						for (dc = 0; dc < 20; dc++)
-							set_attr(1, dc, CORR_ATTR);
-					} else {
-						show_debug();
-					}
-					k = 0;  /* consume key */
-				}
 				if (key_delay > 0) {
 					key_delay--;
 				} else {
