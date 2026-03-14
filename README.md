@@ -28,6 +28,23 @@ zcc +zx -vn -o out/calendar.bin calendar.c -lndos -create-app
 
 This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum emulator (e.g. Fuse, ZXSpin).
 
+## Setting up VS Code
+
+I recommend using it for comfortable development cycle.
+
+Preparation:
+- install VS Code
+- Open project folder
+- It will propose to install C/C++ extension bundle, do it to get Intellisense working
+- Ctrl-Shift-P -> `C/C++ Configurations` -> Add configuration `ZX Spectrum`.
+- Scroll to `Include path`. Include there full path to the include folder for your z88dk installation
+- Then go to a C file and click Win32 in the top bottom corner and select `ZX Spectrum` - now you can go to stdlib of z88dk from your source file
+
+Build/run cycle:
+- Ctrl-Shift-P -> `Tasks: Run Task`
+- Select `Build and Run` - will execute zcc and then start Spectaculator
+- If you have another emulator, just edit the task command in `.vscode/tasks.json`
+
 ## Toolchain
 
 | | |
