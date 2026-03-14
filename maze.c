@@ -174,34 +174,11 @@ const unsigned char spr_coin[8] = {
 };
 
 
-/* Set attribute for character cell (row, col).
-   Inline asm computes addr via 5 shifts (55 T-states)
-   instead of library multiply by 32 (~200 T-states). */
+/* Set attribute for character cell (row, col). */
 void set_attr(unsigned char row, unsigned char col,
               unsigned char attr)
 {
-	ds_row = row;
-	ds_col = col;
-	ds_attr_v = attr;
-
-#asm
-	; Compute 22528 + row*32 + col
-	ld a, (_ds_row)
-	ld l, a
-	ld h, 0
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl            ; HL = row * 32
-	ld a, (_ds_col)
-	add a, l
-	ld l, a               ; row*32 low 5 bits are 0, col<32, no carry
-	ld de, 22528
-	add hl, de            ; HL = attr address
-	ld a, (_ds_attr_v)
-	ld (hl), a
-#endasm
+	*zx_cxy2aaddr(col, row) = attr;
 }
 
 /* Visited flags and explicit stack for DFS and BFS.
@@ -422,29 +399,10 @@ void draw_sprite(unsigned char sr, unsigned char sc,
 #endasm
 }
 
-/* Clear a character cell (just attribute, CORR_ATTR=0).
-   Inline asm avoids set_attr function call overhead entirely. */
+/* Clear a character cell (just attribute, CORR_ATTR=0). */
 void clear_cell(unsigned char sr, unsigned char sc)
 {
-	ds_row = sr;
-	ds_col = sc;
-
-#asm
-	ld a, (_ds_row)
-	ld l, a
-	ld h, 0
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	ld a, (_ds_col)
-	add a, l
-	ld l, a
-	ld de, 22528
-	add hl, de
-	ld (hl), 0            ; CORR_ATTR = INK_BLACK|PAPER_BLACK = 0
-#endasm
+	*zx_cxy2aaddr(sc, sr) = 0;
 }
 
 void draw_dot(unsigned char gx, unsigned char gy)

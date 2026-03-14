@@ -76,6 +76,10 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 - When erasing a sprite from a cell, check if another sprite (exit marker, player, etc.) shares that cell and redraw it after erasing
 - Always check for player/enemy collision both after the player moves AND after the enemy moves
 
+### spectrum.h display address functions — parameter order gotcha
+- `zx_cxy2aaddr(x, y)` and `zx_cxy2saddr(x, y)` take **col first, row second** despite the header declaring them as `(uchar row, uchar col)`. The asm implementation treats the first param as x (col) and second as y (row). The header parameter names are wrong.
+- Similarly `zx_cyx2aaddr(a,b)` is defined as `zx_cxy2aaddr_callee(b,a)` — it swaps to (col,row) internally
+
 ### Known issues
 - UDG characters (codes 144+) do **not** render through z88dk's `printf` — it bypasses the ROM. Don't use `printf("%c", 144)` etc. for custom graphics.
 - `draw()` for long lines may render at unexpected positions. Prefer `plot()` loops for reliable horizontal/vertical lines. Short `draw()` calls (a few pixels) work fine.
