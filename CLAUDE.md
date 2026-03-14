@@ -8,7 +8,7 @@ Cross-compiled C project targeting the ZX Spectrum (Z80) via z88dk, producing .T
 Compile with z88dk's `zcc` targeting the ZX Spectrum:
 
 ```sh
-zcc +zx -vn -o out/maze.bin maze.c -lndos -create-app
+zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -create-app
 ```
 
 This produces a `.tap` file loadable in a ZX Spectrum emulator.
@@ -110,15 +110,17 @@ sccz80 does NOT reliably preserve `unsigned char` (and likely `char`) local vari
 - Screen coordinates becoming wrong → graphics drawn at wrong positions
 - Variables used after a function call having wrong values
 
-**Rule: ALL local variables that are live across a function call MUST be `int`, not `unsigned char` or `char`.** This applies to:
+**Rule: ALL non-static local variables that are live across a function call MUST be `int`, not `unsigned char` or `char`.** This applies to:
 - Loop counters in loops that contain function calls
 - Variables set before a function call and read after it
-- Function parameters of functions that call other functions (use `int` params)
+- Function parameters that are read after a function call in the body
 
-`unsigned char` locals are ONLY safe when:
-- Used in a function that makes NO function calls (pure computation)
-- Set and consumed entirely BETWEEN two function calls (not across one)
-- Used as the loop variable in `for (i = 0; i < 8; i++) { *base = x; base += 256; }` style loops with no function calls in the body
+`unsigned char` non-static locals/params are safe when:
+- The variable is consumed entirely BEFORE the first function call (e.g. params copied to static locals at the top of a function)
+- Used in a loop whose body makes NO function calls
+- Used in a function that makes NO function calls (pure computation / leaf function)
+
+**`static` locals bypass this bug entirely** — they use fixed memory addresses like globals, so `static unsigned char` is always safe, even across function calls. Prefer `static` locals in non-reentrant code (all game functions).
 
 ### `unsigned char` globals are fine
 Global variables as `unsigned char` work correctly — the compiler loads/stores them from fixed memory addresses, not registers. Use `unsigned char` freely for globals to save RAM.
@@ -131,7 +133,45 @@ Global variables as `unsigned char` work correctly — the compiler loads/stores
 - **`memset()` for bulk clears**: `memset((unsigned char *)16384u, 0, 6144u)` for screen clearing, `memset(array, 0, size)` for array init — faster than manual loops
 - **`SCR_ADDR` macro**: precompute screen addresses with `16384u + ((unsigned int)(sr >> 3) << 11) + ((unsigned int)(sr & 7) << 5) + sc` — avoids repeated calculation
 - **`unsigned char` for arrays that only store small values**: `stk[]`, `vis[]` etc. can be `unsigned char` instead of `int` to halve memory usage
-- **`unsigned char` function params for leaf functions**: functions like `set_attr(unsigned char row, unsigned char col, unsigned char attr)` that don't call other functions can safely use 8-bit params
+- **`unsigned char` function params**: safe for leaf functions AND for non-leaf functions where params are consumed before the first function call (e.g. copied to static locals at the top). Only use `int` params when the param is read after a function call in the body
+
+### C-level optimization rules (from z88dk WritingOptimalCode wiki)
+
+#### Build flags
+- Use `zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -create-app` for maximum runtime speed
+- `-O2 --opt-code-speed` enables inlined 16-bit get/set, faster unsigned char multiply, and peephole optimizations
+- Selective: `--opt-code-speed=inlineints,ucharmult` for specific speedups without full code size increase
+- **Remove debug flags** (`--c-code-in-asm`, `-Cc--gcline`) before final builds — they degrade peephole optimization
+
+#### Data types
+- **Prefer unsigned types** — unsigned comparisons are much faster on Z80 than signed
+- **Prefer `unsigned char`** as the default small type — both compilers generate superior code with it
+- **Right-size types**: Z80 handles 8-bit and 16-bit efficiently; 32-bit operations are very expensive. Demote to smaller types as soon as possible after arithmetic
+
+#### Variable storage
+- **`static` local variables** are a large speed/size win — Z80 has no efficient stack-relative addressing, so locals accessed via SP offsets are slow. Static locals use direct memory addressing instead. Trade-off: functions become non-reentrant (fine for game code)
+- **`static` locals also fix the sccz80 `unsigned char` corruption bug** — like globals, they use fixed memory addresses, so `static unsigned char` locals are safe across function calls
+- **Declaration order (sccz80)**: for non-static locals, declare most frequently used variables last — compiler optimizes access to variables near top of stack
+
+#### Function design
+- **`__z88dk_fastcall`** for single-parameter functions — parameter passed in HL register instead of stack, saving ~30 T-states per call. Syntax: `void func(int x) __z88dk_fastcall`
+- **`__z88dk_callee`** for multi-parameter functions where the callee cleans the stack
+- **Minimize parameter count** — stack-based parameter passing is expensive on Z80. For unavoidable cases, copy params to static locals before use
+
+#### Loop optimization
+- **Use `!=` (equality) over `<` (magnitude) in loop conditions** — Z80 equality check is faster than magnitude comparison. `for (i = 0; i != 10; ++i)` is faster than `for (i = 0; i < 10; ++i)`
+- **Pre-increment `++i` over post-increment `i++`** — post-increment generates extra code to save the pre-increment value that the compiler often cannot eliminate
+- **Compute loop-invariant expressions once** outside the loop — don't repeat calculations yielding the same value
+
+#### Data sections
+- **`const` on read-only data** (sprite bitmaps, lookup tables) — moves data to RODATA/CODE section, may reduce RAM usage and enable compression in the TAP file
+- **`char *str = "..."` for string literals** (pointer, not array) — stores string once in ROM; `char str[] = "..."` copies to RAM
+- **`const` arrays need matching `const` pointer params** — e.g. `const unsigned char *spr` when passing `const unsigned char spr_data[]`
+
+#### Arithmetic
+- **Constant operand ordering (sccz80)**: `a = 3 + 2 - a` generates better code than `a = 3 - a + 2` — group constants together first
+- **Use constant shift values** — variable shifts are much slower than constant ones
+- **Prefer `*` over `<<` for computed multiplies** (also avoids the sccz80 8-bit truncation bug)
 
 ## Inline assembly optimization — patterns and findings
 

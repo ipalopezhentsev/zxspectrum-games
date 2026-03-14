@@ -8,8 +8,8 @@
       "args": [
         "+zx",
         "-vn",
-        "-SO3",
-        "--opt-code-speed=all",
+        "-O2",
+        "--opt-code-speed",
         //"-compiler=sdcc",
         "-o",
         "out/maze.bin",

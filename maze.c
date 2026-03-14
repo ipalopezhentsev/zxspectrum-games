@@ -43,7 +43,7 @@ unsigned char px, py;    /* player position in expanded grid */
 unsigned char enx[4], eny[4];    /* enemy positions in expanded grid */
 unsigned char last_edir_arr[4];  /* last direction each enemy moved */
 unsigned char enemy_next;        /* round-robin: which enemy moves next */
-unsigned int enemy_accum;        /* Bresenham accumulator for spreading */
+unsigned char enemy_accum;       /* Bresenham accumulator for spreading */
 unsigned int rseed;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
@@ -61,7 +61,7 @@ unsigned char extra_halls_rng;  /* random additional halls */
 unsigned char time_limit;       /* seconds per level for this difficulty */
 
 /* High scores table */
-int hiscores[NUM_HISCORES];
+uint hiscores[NUM_HISCORES];
 unsigned char hilevel[NUM_HISCORES];
 
 /* Timer state */
@@ -73,8 +73,7 @@ char txt_buffer[TEXT_SCR_WIDTH + 1];
 
 /* Transient globals for inline-asm sprite routines */
 unsigned int ds_scr;
-unsigned char *ds_spr_ptr;
-unsigned int ds_attr_a;
+const unsigned char *ds_spr_ptr;
 unsigned char ds_attr_v;
 unsigned char ds_row;
 unsigned char ds_col;
@@ -122,7 +121,7 @@ unsigned char exit_gx, exit_gy;
 /* Pre-computed 8-byte bitmaps for sprites (all within one 8x8 cell) */
 //don't remove formatting and binary constants, it's more readable this way
 /* Brick pattern: red ink on yellow paper */
-unsigned char brick[8] = {
+const unsigned char brick[8] = {
 	0b11110111, 
 	0b11110111, 
 	0b11110111, 
@@ -133,7 +132,7 @@ unsigned char brick[8] = {
 	0b00000000
 };
 
-unsigned char spr_dot[8]  = {
+const unsigned char spr_dot[8]  = {
 	0b00000000,
 	0b00000000,
 	0b00111000,
@@ -143,7 +142,7 @@ unsigned char spr_dot[8]  = {
 	0b00111000,
 	0b00000000
 };
-unsigned char spr_enemy[8]= {
+const unsigned char spr_enemy[8]= {
 	0b00000000,
 	0b00000000,
 	0b00010000,
@@ -153,7 +152,7 @@ unsigned char spr_enemy[8]= {
 	0b00010000,
 	0b00000000
 };
-unsigned char spr_exit[8] = {
+const unsigned char spr_exit[8] = {
 	0b00000000,
 	0b10000010,
 	0b01000100,
@@ -163,7 +162,7 @@ unsigned char spr_exit[8] = {
 	0b01000100,
 	0b10000010
 };
-unsigned char spr_coin[8] = {
+const unsigned char spr_coin[8] = {
 	0b00000000,
 	0b00111100,
 	0b01111110,
@@ -213,11 +212,11 @@ unsigned char sp;
 
 void generate_maze()
 {
-	int x, y, cx, cy, nx, ny;
-	int dirs[4], nd, i, j, t;
+	static unsigned char x, y, cx, cy, nx, ny;
+	static unsigned char dirs[4], nd, i, j, t;
 
-	for (y = 0; y < ROWS; y++)
-		for (x = 0; x < COLS; x++) {
+	for (y = 0; y != ROWS; ++y)
+		for (x = 0; x != COLS; ++x) {
 			walls[y][x] = 3;
 			vis[y * COLS + x] = 0;
 		}
@@ -252,7 +251,7 @@ void generate_maze()
 		}
 
 		/* Shuffle directions */
-		for (i = nd - 1; i > 0; i--) {
+		for (i = nd - 1; i > 0; --i) {
 			j = rand() % (i + 1);
 			t = dirs[i];
 			dirs[i] = dirs[j];
@@ -278,11 +277,11 @@ void generate_maze()
    loops and small halls so the player can dodge the enemy. */
 void add_extra_passages()
 {
-	int x, y, i, n;
+	static unsigned char x, y, i, n;
 
 	/* Pass 1: randomly remove walls → loops (difficulty controls frequency) */
-	for (y = 0; y < ROWS; y++)
-		for (x = 0; x < COLS; x++) {
+	for (y = 0; y != ROWS; ++y)
+		for (x = 0; x != COLS; ++x) {
 			if (x < COLS - 1 && (walls[y][x] & 1) && rand() % extra_wall_pct == 0)
 				walls[y][x] &= ~1;
 			if (y < ROWS - 1 && (walls[y][x] & 2) && rand() % extra_wall_pct == 0)
@@ -291,7 +290,7 @@ void add_extra_passages()
 
 	/* Pass 2: create 2x2 halls (difficulty controls count) */
 	n = extra_halls_base + rand() % (extra_halls_rng + 1);
-	for (i = 0; i < n; i++) {
+	for (i = 0; i != n; ++i) {
 		x = rand() % (COLS - 1);
 		y = rand() % (ROWS - 1);
 		/* Remove walls between (x,y), (x+1,y), (x,y+1), (x+1,y+1) */
@@ -302,15 +301,16 @@ void add_extra_passages()
 }
 
 void draw_brick(unsigned char sr, unsigned char sc);
+unsigned char center_x(uchar text_len) __z88dk_fastcall;
 
 void draw_maze()
 {
-	int gr, gc, sr, sc, w;
-	unsigned char *wm;
+	static unsigned char gr, gc, sr, sc, w;
+	static unsigned char *wm;
 
 	wm = wallmap;
-	for (gr = 0; gr < EROWS; gr++) {
-		for (gc = 0; gc < ECOLS; gc++) {
+	for (gr = 0; gr != EROWS; ++gr) {
+		for (gc = 0; gc != ECOLS; ++gc) {
 			sr = MAZE_R0 + gr;
 			sc = MAZE_C0 + gc;
 			w = 0;
@@ -323,7 +323,7 @@ void draw_maze()
 				} else {
 					/* Interior corner post: wall only if
 					   any adjacent wall segment exists */
-					int cy, cx;
+					unsigned char cy, cx;
 					cy = gr >> 1;
 					cx = gc >> 1;
 					if ((walls[cy-1][cx-1] & 1) ||
@@ -359,7 +359,7 @@ void draw_maze()
    Unrolled inline asm: INC H steps to the next pixel row within
    the same character cell (rows are 256 bytes apart in screen RAM). */
 void draw_sprite(unsigned char sr, unsigned char sc,
-                 unsigned char *spr, unsigned char attr)
+                 const unsigned char *spr, unsigned char attr)
 {
 	ds_scr = SCR_ADDR(sr, sc);
 	ds_spr_ptr = spr;
@@ -575,7 +575,7 @@ void draw_coin(unsigned char cx, unsigned char cy)
 /* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
 void place_coins()
 {
-	int target, attempts, idx, cx, cy, gx, gy;
+	static unsigned char target, attempts, idx, cx, cy, gx, gy;
 	coins_left = 0;
 	memset(coinmap, 0, ROWS * COLS);
 
@@ -593,9 +593,9 @@ void place_coins()
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
 		{
-			int skip, ei;
+			unsigned char skip, ei;
 			skip = 0;
-			for (ei = 0; ei < num_enemies; ei++)
+			for (ei = 0; ei != num_enemies; ++ei)
 				if (gx == enx[ei] && gy == eny[ei]) skip = 1;
 			if (skip) continue;
 		}
@@ -617,7 +617,7 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
 	cx = gx >> 1;
 	cy = gy >> 1;
-	int idx=row_x_cols[cy] + cx;
+	unsigned char idx=row_x_cols[cy] + cx;
 	if (coinmap[idx]) {
 		coinmap[idx] = 0;
 		coins_left--;
@@ -630,16 +630,17 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 /* Display score on the title row */
 void show_score()
 {
-	int len = sprintf(txt_buffer, "SCORE: %06d", score);
+	static unsigned char len;
+	len = sprintf(txt_buffer, "SCORE: %06d", score);
 	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
 
 /* Display remaining time on row 0 */
 void show_timer()
 {
-	int len, c;
-	unsigned int m, s;
-	unsigned char attr;
+	static unsigned char len, c;
+	static unsigned char m, s;
+	static unsigned char attr;
 	/* divmod 60 via subtraction — faster than library divide on Z80 */
 	s = timer_sec;
 	m = 0;
@@ -648,19 +649,19 @@ void show_timer()
 	gotoxy(center_x(len), 0); printf(txt_buffer);
 	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
 	if (timer_sec <= 10 || timer_sec == time_limit) {
-		for (c = 12; c < 20; c++)
+		for (c = 12; c != 20; ++c)
 			set_attr(0, c, attr);
 	}
 }
 
 /* Update high scores table, return rank (0-based) or -1 */
-int update_hiscores()
+char update_hiscores()
 {
-	int i, j;
-	for (i = 0; i < NUM_HISCORES; i++) {
+	static unsigned char i, j;
+	for (i = 0; i != NUM_HISCORES; ++i) {
 		if (score > hiscores[i]) {
 			/* Shift lower scores down */
-			for (j = NUM_HISCORES - 1; j > i; j--) {
+			for (j = NUM_HISCORES - 1; j > i; --j) {
 				hiscores[j] = hiscores[(unsigned char)(j-1)];
 				hilevel[j] = hilevel[(unsigned char)(j-1)];
 			}
@@ -673,35 +674,36 @@ int update_hiscores()
 }
 
 /* Display high scores screen */
-void show_hiscores(char rank)
+void show_hiscores(char rank) __z88dk_fastcall
 {
-	int i, r, c;
-	unsigned char attr;
+	static unsigned char i, r, c;
+	static unsigned char attr;
 
 	zx_cls_attr(PAPER_BLACK | INK_WHITE);
-	int len = sprintf(txt_buffer, "-= HIGH SCORES =-");
+	static unsigned char len;
+	len = sprintf(txt_buffer, "-= HIGH SCORES =-");
 	gotoxy(center_x(len), 1); 
 	printf(txt_buffer);
 
-	for (i = 0; i < NUM_HISCORES; i++) {
+	for (i = 0; i != NUM_HISCORES; ++i) {
 		r = 3 + (i << 1);
 		if (hiscores[i] == 0) {
 			gotoxy(6, r);
 			printf("%d.  ----", i + 1);
 		} else {
 			gotoxy(6, r);
-			printf("%d.  %06d  Level %d", i + 1,
+			printf("%d.  %06u  Level %d", i + 1,
 			       hiscores[i], hilevel[i]);
 		}
 		attr = (i == rank) ? (BRIGHT | INK_GREEN | PAPER_BLACK)
 		                    : HISCORE_ATTR;
-		for (c = 4; c < 28; c++)
+		for (c = 4; c != 28; ++c)
 			set_attr(r, c, attr);
 	}
 
 	gotoxy(9, 16);
 	printf("Press any key...");
-	for (c = 4; c < 28; c++)
+	for (c = 4; c != 28; ++c)
 		set_attr(16, c, TITLE_ATTR);
 
 	fgetc_cons();
@@ -711,8 +713,9 @@ void show_hiscores(char rank)
    Must be called after generate_maze() + add_extra_passages(). */
 void build_adj()
 {
-	int i, r, c, idx;
-	for (i = 0; i < ROWS * COLS; i++) {
+	static unsigned char i, r, c;
+	static uint idx;
+	for (i = 0; i != ROWS * COLS; ++i) {
 		r = bfs_row[i];
 		c = bfs_col[i];
 		idx = i * 4;
@@ -726,11 +729,11 @@ void build_adj()
 /* BFS on maze cell grid with inline-asm inner loop.
    Precomputed adj[] eliminates all walls/boundary checks.
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
-int enemy_bfs(int exx, int eyy)
+char enemy_bfs(unsigned char exx, unsigned char eyy)
 {
-	int ecx, ecy, pcx, pcy;
-	int ci;
-	unsigned char d;
+	static unsigned char ecx, ecy, pcx, pcy;
+	static unsigned char ci;
+	static unsigned char d;
 
 	ecx = exx >> 1;  ecy = eyy >> 1;
 	pcx = px >> 1;   pcy = py >> 1;
@@ -901,8 +904,8 @@ int enemy_bfs(int exx, int eyy)
 
 	/* Cleanup: zero visited entries */
 	{
-		uint i;
-		for (i = 0; i < bfs_tail_g; i++)
+		unsigned char i;
+		for (i = 0; i != bfs_tail_g; ++i)
 			vis[stk[i]] = 0;
 	}
 
@@ -917,11 +920,13 @@ int enemy_bfs(int exx, int eyy)
 }
 
 /* Pick a random valid direction from (exx,eyy) on expanded grid */
-int enemy_random_dir(int exx, int eyy)
+char enemy_random_dir(unsigned char exx, unsigned char eyy)
 {
-	int dirs[4];
-	int fi = erow_x_ecols[eyy] + exx;
-	int nd = 0;
+	static unsigned char dirs[4];
+	static uint fi;
+	static unsigned char nd;
+	fi = erow_x_ecols[eyy] + exx;
+	nd = 0;
 	if (!wallmap[fi - 1])     dirs[nd++] = 0;
 	if (!wallmap[fi + 1])     dirs[nd++] = 1;
 	if (!wallmap[fi - ECOLS]) dirs[nd++] = 2;
@@ -932,10 +937,12 @@ int enemy_random_dir(int exx, int eyy)
 
 /* Try Manhattan direction toward player from (exx,eyy) on expanded grid.
    Returns direction if passable, -1 if both axes blocked. */
-int enemy_manhattan(int exx, int eyy)
+char enemy_manhattan(unsigned char exx, unsigned char eyy)
 {
-	int adx, ady, fi, dir1, dir2;
-	int ddx, ddy;
+	static unsigned char adx, ady;
+	static uint fi;
+	static char dir1, dir2;
+	static char ddx, ddy;
 	ddx = px - exx;
 	ddy = py - eyy;
 	adx = ddx < 0 ? -ddx : ddx;
@@ -971,12 +978,12 @@ int enemy_manhattan(int exx, int eyy)
 /* Move enemy n one step.
    At odd position (maze cell): use cached BFS, recalc, or random.
    At even position (corridor): continue in same direction. */
-void move_enemy(uchar n)
+void move_enemy(uchar n) __z88dk_fastcall
 {
-	char dir;
-	uchar old_ex, old_ey;
-	int other;
-	unsigned char attr;
+	static char dir;
+	static uchar old_ex, old_ey;
+	static unsigned char other;
+	static unsigned char attr;
 
 	old_ex = enx[n];
 	old_ey = eny[n];
@@ -1012,7 +1019,7 @@ void move_enemy(uchar n)
 	{
 		uchar oi;
 		unsigned char oa;
-		for (oi = 0; oi < num_enemies; oi++) {
+		for (oi = 0; oi != num_enemies; ++oi) {
 			if (oi == n) continue;
 			if (old_ex == enx[oi] && old_ey == eny[oi]) {
 				oa = (oi == 0) ? ENEMY_ATTR : (oi == 1) ? ENEMY2_ATTR : (oi == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
@@ -1067,23 +1074,22 @@ unsigned char can_move(char dx, char dy)
 }
 
 /* Draw a popup window background: rows 10-14, cols 5-26.
-   Border cells get brick pixels + border_attr; inner cells are cleared + inner_attr.
-   Params are int to avoid sccz80 unsigned char corruption across set_attr calls. */
-void draw_popup_bg(int border_attr, int inner_attr)
+   Border cells get brick pixels + border_attr; inner cells are cleared + inner_attr. */
+void draw_popup_bg(unsigned char border_attr, unsigned char inner_attr)
 {
-	int r, c, i;
-	unsigned char *base;
-	for (r = 10; r <= 14; r++) {
-		for (c = 5; c <= 26; c++) {
+	static unsigned char r, c, i;
+	static unsigned char *base;
+	for (r = 10; r <= 14; ++r) {
+		for (c = 5; c <= 26; ++c) {
 			base = (unsigned char *)SCR_ADDR(r, c);
 			if (r == 10 || r == 14 || c == 5 || c == 26) {
-				for (i = 0; i < 8; i++) {
+				for (i = 0; i != 8; ++i) {
 					*base = brick[i];
 					SC_NEXT_LINE(base);
 				}
 				set_attr(r, c, border_attr);
 			} else {
-				for (i = 0; i < 8; i++) {
+				for (i = 0; i != 8; ++i) {
 					*base = 0;
 					SC_NEXT_LINE(base);
 				}
@@ -1093,19 +1099,18 @@ void draw_popup_bg(int border_attr, int inner_attr)
 	}
 }
 
-/* Re-apply inner_attr to text rows 11-13, cols 6-25 (undoes printf attr side-effects).
-   Param is int to avoid sccz80 unsigned char corruption across set_attr calls. */
-void popup_fix_attrs(int inner_attr)
+/* Re-apply inner_attr to text rows 11-13, cols 6-25 (undoes printf attr side-effects). */
+void popup_fix_attrs(unsigned char inner_attr) __z88dk_fastcall
 {
-	int c;
-	for (c = 6; c <= 25; c++) {
+	static unsigned char c;
+	for (c = 6; c <= 25; ++c) {
 		set_attr(11, c, inner_attr);
 		set_attr(12, c, inner_attr);
 		set_attr(13, c, inner_attr);
 	}
 }
 
-int center_x(int text_len)
+unsigned char center_x(uchar text_len) __z88dk_fastcall
 {
 	return (TEXT_SCR_WIDTH - text_len) >> 1;
 }
@@ -1121,7 +1126,8 @@ void win_cut_scene()
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_GREEN;
 	
-	int len = sprintf(txt_buffer, "** ESCAPED! **");
+	static unsigned char len;
+	len = sprintf(txt_buffer, "** ESCAPED! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Time bonus: +%d", timer_sec);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
@@ -1140,7 +1146,8 @@ void game_over_cut_scene()
 		BRIGHT | INK_WHITE  | PAPER_RED);
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_RED;
-	int len = sprintf(txt_buffer, "** CAUGHT! **");
+	static unsigned char len;
+	len = sprintf(txt_buffer, "** CAUGHT! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Score: %d", score);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
@@ -1159,7 +1166,8 @@ void time_up_cut_scene()
 		BRIGHT | INK_WHITE  | PAPER_RED);
 	*((unsigned char *)ATTR_P_ADDR) =
 		BRIGHT | INK_WHITE | PAPER_RED;
-	int len = sprintf(txt_buffer, "** TIME UP! **");
+	static unsigned char len;
+	len = sprintf(txt_buffer, "** TIME UP! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Score: %d", score);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
@@ -1173,16 +1181,16 @@ void time_up_cut_scene()
 
 main()
 {
-	char k;
-	int dx, dy;
-	int caught;
-	unsigned int tick;
-	int rank;
-	unsigned int key_delay;
-	int game_over;
+	static char k;
+	static char dx, dy;
+	static unsigned char caught;
+	static unsigned char tick;
+	static char rank;
+	static unsigned char key_delay;
+	static unsigned char game_over;
 
 	/* Initialize high scores */
-	for (rank = 0; rank < NUM_HISCORES; rank++) {
+	for (rank = 0; rank != NUM_HISCORES; ++rank) {
 		hiscores[rank] = 0;
 		hilevel[rank] = 0;
 	}
@@ -1190,16 +1198,16 @@ main()
 	score = 0;
 
 	/* Init BFS lookup tables (avoids Z80 division by 14 in inner loop) */
-	for (rank = 0; rank < ROWS * COLS; rank++) {
+	for (rank = 0; rank != ROWS * COLS; ++rank) {
 		bfs_row[rank] = rank / COLS;
 		bfs_col[rank] = rank % COLS;
 	}
 	/* Init row*COLS lookup table (avoids Z80 multiply by 14) */
-	for (rank = 0; rank < ROWS; rank++) {
+	for (rank = 0; rank != ROWS; ++rank) {
 		row_x_cols[rank] = rank * COLS;
 	}
 	/* Init row*ECOLS lookup table (avoids Z80 multiply by 29) */
-	for (rank = 0; rank < EROWS; rank++) {
+	for (rank = 0; rank != EROWS; ++rank) {
 		erow_x_ecols[rank] = rank * ECOLS;
 	}
 
@@ -1209,10 +1217,10 @@ main()
 	while (1) {
 		zx_cls_attr(PAPER_BLACK | INK_WHITE);
 		{
-			int len, c;
+			static unsigned char len, c;
 			len = sprintf(txt_buffer, "-= MAZE RUNNER =-");
 			gotoxy(center_x(len), 3); printf(txt_buffer);
-			for (c = 6; c < 26; c++)
+			for (c = 6; c != 26; ++c)
 				set_attr(3, c, TITLE_ATTR);
 
 			len = sprintf(txt_buffer, "Select difficulty:");
@@ -1220,22 +1228,22 @@ main()
 
 			len = sprintf(txt_buffer, "1 - Easy");
 			gotoxy(center_x(len), 10); printf(txt_buffer);
-			for (c = 12; c < 20; c++)
+			for (c = 12; c != 20; ++c)
 				set_attr(10, c, BRIGHT | INK_GREEN | PAPER_BLACK);
 
 			len = sprintf(txt_buffer, "2 - Normal");
 			gotoxy(center_x(len), 12); printf(txt_buffer);
-			for (c = 11; c < 21; c++)
+			for (c = 11; c != 21; ++c)
 				set_attr(12, c, BRIGHT | INK_YELLOW | PAPER_BLACK);
 
 			len = sprintf(txt_buffer, "3 - Hard");
 			gotoxy(center_x(len), 14); printf(txt_buffer);
-			for (c = 12; c < 20; c++)
+			for (c = 12; c != 20; ++c)
 				set_attr(14, c, BRIGHT | INK_RED | PAPER_BLACK);
 
 			len = sprintf(txt_buffer, "4 - Nightmare");
 			gotoxy(center_x(len), 16); printf(txt_buffer);
-			for (c = 10; c < 22; c++)
+			for (c = 10; c != 22; ++c)
 				set_attr(16, c, BRIGHT | INK_MAGENTA | PAPER_BLACK);
 		}
 
@@ -1291,8 +1299,8 @@ main()
 		level++;
 		zx_cls_attr(INK_WHITE | PAPER_BLACK);
 		{
-			int len;
-			char *dname;
+			static unsigned char len;
+			static char *dname;
 			dname = (difficulty == 1) ? "Easy" :
 			        (difficulty == 2) ? "Normal" :
 			        (difficulty == 3) ? "Hard" : "Nightmare";
@@ -1324,8 +1332,8 @@ main()
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		{
-			int ei;
-			for (ei = 0; ei < num_enemies; ei++)
+			unsigned char ei;
+			for (ei = 0; ei != num_enemies; ++ei)
 				last_edir_arr[ei] = 0;
 		}
 
@@ -1333,9 +1341,9 @@ main()
 		place_coins();
 		draw_exit(exit_gx, exit_gy);
 		{
-			int ei;
-			unsigned char ea;
-			for (ei = 0; ei < num_enemies; ei++) {
+			static unsigned char ei;
+			static unsigned char ea;
+			for (ei = 0; ei != num_enemies; ++ei) {
 				ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR : (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
 				draw_sprite(SROW(eny[ei]), SCOL(enx[ei]), spr_enemy, ea);
 			}
@@ -1383,8 +1391,8 @@ main()
 
 					/* Player walked onto enemy? */
 					{
-						int ei;
-						for (ei = 0; ei < num_enemies; ei++)
+						unsigned char ei;
+						for (ei = 0; ei != num_enemies; ++ei)
 							if (px == enx[ei] && py == eny[ei])
 								caught = 1;
 					}

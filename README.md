@@ -62,13 +62,13 @@ Build/run cycle:
 - title page
 - joysticks?
 - show zoomed location of player on start
-- remove D button and its stats
++ remove D button and its stats
 - web emul
 - don't open exit until min coins collected?
 - introduce delay for studying level - can start with zoom on player then places enemies one by one with stumping sound
 - ay effects/music
-- prefer unsigned to signed and char to int
-- follow all advice from https://github.com/z88dk/z88dk/wiki/WritingOptimalCode
++ prefer unsigned to signed and char to int
++ follow all advice from https://github.com/z88dk/z88dk/wiki/WritingOptimalCode
 - pixel scrolling (with masks?! - if we add background to maze)
 - player figure -> man with several movement phases
 - use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
