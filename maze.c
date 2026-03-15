@@ -119,7 +119,7 @@ unsigned int bfs_adj_ptr_g;
 
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
-#define CORR_ATTR   (INK_BLACK | PAPER_BLACK)
+#define CORR_ATTR   (INK_WHITE | PAPER_BLACK)
 #define PLAYER_ATTR (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define ENEMY_ATTR  (BRIGHT | INK_RED | PAPER_BLACK)
 #define ENEMY2_ATTR (BRIGHT | INK_MAGENTA | PAPER_BLACK)
@@ -150,42 +150,43 @@ const unsigned char brick[8] = {
 	0b00000000
 };
 
-/* SP1 masked sprite graphics: (mask, graphic) pairs × 8 rows.
-   mask = ~graphic where opaque, 0xFF where transparent.
-   Height=2: content row + transparent overflow row (standard SP1 pattern).
-   Frame pointer points past the top overflow row (column data[16]). */
+/* SP1 MASK2NR sprite graphics: (mask, graphic) pairs × 8 rows.
+   Masks are 0x00 (fully opaque) so sprite overwrites background completely.
+   Overflow rows use 0xFF mask (fully transparent) to not affect adjacent cells.
+   Height=2: content row + transparent overflow row.
+   Frame pointer points past the top overflow row (data[16]). */
 
-/* Transparent row: 16 bytes of (0xFF, 0x00) */
+/* Transparent overflow row: 16 bytes of (0xFF, 0x00) */
 #define SP1_TRANSPARENT_ROW \
 	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00, \
 	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00
 
 unsigned char sp1_dot_data[] = {
-	SP1_TRANSPARENT_ROW,   /* top overflow (LB col) */
-	0xFF,0x00, 0xFF,0x00,
-	0xC7,0x38, 0x83,0x7C,
-	0x83,0x7C, 0x83,0x7C,
-	0xC7,0x38, 0xFF,0x00,
-	SP1_TRANSPARENT_ROW    /* bottom overflow (LB col) */
+	SP1_TRANSPARENT_ROW,   /* top overflow */
+	0x00,0x00, 0x00,0x00,
+	0x00,0x38, 0x00,0x7C,
+	0x00,0x7C, 0x00,0x7C,
+	0x00,0x38, 0x00,0x00,
+	SP1_TRANSPARENT_ROW    /* bottom overflow */
 };
 unsigned char *sp1_dot_gfx = &sp1_dot_data[16];
 
 unsigned char sp1_enemy_data[] = {
 	SP1_TRANSPARENT_ROW,
-	0xFF,0x00, 0xFF,0x00,
-	0xEF,0x10, 0xD7,0x28,
-	0xAB,0x54, 0xD7,0x28,
-	0xEF,0x10, 0xFF,0x00,
+	0x00,0x00, 0x00,0x00,
+	0x00,0x10, 0x00,0x28,
+	0x00,0x54, 0x00,0x28,
+	0x00,0x10, 0x00,0x00,
 	SP1_TRANSPARENT_ROW
 };
 unsigned char *sp1_enemy_gfx = &sp1_enemy_data[16];
 
 unsigned char sp1_exit_data[] = {
 	SP1_TRANSPARENT_ROW,
-	0xFF,0x00, 0x7D,0x82,
-	0xBB,0x44, 0xD7,0x28,
-	0xEF,0x10, 0xD7,0x28,
-	0xBB,0x44, 0x7D,0x82,
+	0x00,0x00, 0x00,0x82,
+	0x00,0x44, 0x00,0x28,
+	0x00,0x10, 0x00,0x28,
+	0x00,0x44, 0x00,0x82,
 	SP1_TRANSPARENT_ROW
 };
 unsigned char *sp1_exit_gfx = &sp1_exit_data[16];
@@ -197,6 +198,18 @@ const unsigned char spr_coin[8] = {
 	0b00111100,
 	0b00111100,
 	0b00011000,
+	0b00000000
+};
+
+/* Floor tile: sparse dot pattern for corridor background */
+const unsigned char floor_tile[8] = {
+	0b00000000,
+	0b00100010,
+	0b00000000,
+	0b00000000,
+	0b00000000,
+	0b10001000,
+	0b00000000,
 	0b00000000
 };
 
@@ -372,7 +385,7 @@ void draw_maze()
 			if (w)
 				sp1_PrintAtInv(sr, sc, WALL_ATTR, 'B');
 			else
-				sp1_PrintAtInv(sr, sc, CORR_ATTR, ' ');
+				sp1_PrintAtInv(sr, sc, CORR_ATTR, 'F');
 		}
 	}
 }
@@ -503,7 +516,7 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 		coins_left--;
 		score += 10;
 		/* Remove coin tile — SP1 will restore corridor background */
-		sp1_PrintAtInv(SROW(gy), SCOL(gx), CORR_ATTR, ' ');
+		sp1_PrintAtInv(SROW(gy), SCOL(gx), CORR_ATTR, 'F');
 		return 1;
 	}
 	return 0;
@@ -906,7 +919,7 @@ void move_enemy(uchar n) __z88dk_fastcall
 			coinmap[ccy * COLS + ccx] = 0;
 			coins_left--;
 			/* Remove coin tile */
-			sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, ' ');
+			sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, 'F');
 		}
 	}
 
@@ -1088,11 +1101,14 @@ main()
 	sbrk((void *)0xF200, 0x0DFE);  /* rotation table area, unused with NR sprites */
 
 	sp1_Initialize(SP1_IFLAG_OVERWRITE_TILES | SP1_IFLAG_OVERWRITE_DFILE,
-		INK_BLACK | PAPER_BLACK, ' ');
+		CORR_ATTR, 'F');
 	sp1_TileEntry('B', brick);
 	sp1_TileEntry('C', spr_coin);
+	sp1_TileEntry('F', floor_tile);
 
-	/* Create SP1 sprites: single-column NR (non-rotated), height=2.
+	/* Create SP1 sprites: single-column NR (non-rotated), height=2, MASK2NR.
+	   Masks are 0x00 (opaque) so sprite fully overwrites background cell.
+	   SP1 restores background tiles when sprite moves away.
 	   xthresh=0 prevents the only column from being suppressed at hrot=0. */
 	spr_player = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 0);
 	spr_player->xthresh = 0;
