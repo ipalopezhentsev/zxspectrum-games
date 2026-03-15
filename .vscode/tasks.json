@@ -10,11 +10,11 @@
         "-vn",
         "-O2",
         "--opt-code-speed",
-        //"-compiler=sdcc",
         "-o",
         "out/maze.bin",
         "maze.c",
         "-lndos",
+        "-lsp1-zx",
         "-create-app"
       ],
       "group": {

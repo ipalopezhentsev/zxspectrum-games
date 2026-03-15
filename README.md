@@ -70,11 +70,12 @@ Build/run cycle:
 + prefer unsigned to signed and char to int
 + follow all advice from https://github.com/z88dk/z88dk/wiki/WritingOptimalCode
 - pixel scrolling (with masks?! - if we add background to maze)
+- some background in corridors?
 - player figure -> man with several movement phases
-- use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
-// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
-arch/zx/sp1.h - SP1 software sprite engine for zx https://github.com/z88dk/z88dk/wiki/LIBRARY-SP1-Software-Sprites-(sp1.h)
++ use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
++// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
++arch/zx/sp1.h - SP1 software sprite engine for zx https://github.com/z88dk/z88dk/wiki/LIBRARY-SP1-Software-Sprites-(sp1.h)
 input.h - direct interface with user-input devices (keyboard, joystick, mouse)
 sound/aywyz.h - WYZ tracker for AY819x sound chips
 sound/bit.h - audio generation functions using a 1-bit device
-stdlib.h - general utilities (sorting, number↔ascii, !!!!random numbers, …)
++stdlib.h - general utilities (sorting, number↔ascii, !!!!random numbers, …)

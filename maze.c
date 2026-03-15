@@ -1,14 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <graphics.h>
 #include <conio.h>
 #include <features.h>
 #include <sound.h>
 #include <intrinsic.h>
 #include <arch/zx/spectrum.h>
+#include <arch/zx/sprites/sp1.h>
+#include <malloc.h>
+
+#pragma output STACKPTR=0xD000
 
 #define TEXT_SCR_WIDTH 64
+
 
 #define COLS 14
 #define ROWS 9
@@ -26,14 +30,6 @@
 #define SROW(gy) (MAZE_R0 + (gy))
 #define SCOL(gx) (MAZE_C0 + (gx))
 
-/* Screen address from char cell (sr, sc) — avoids repeating the formula */
-#define SCR_ADDR(sr, sc) \
-	(16384u + ((unsigned int)((sr) >> 3) << 11) \
-	 + ((unsigned int)((sr) & 7) << 5) + (sc))
-
-/* Pointer goto next 8x8 screen row (increment only high byte).
-   This avoids a full 16-bit add in tight sprite draw loops. */
-#define SC_NEXT_LINE(p) (((unsigned char *)&p)[1]++)
 
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
@@ -45,6 +41,7 @@ unsigned char last_edir_arr[4];  /* last direction each enemy moved */
 unsigned char enemy_next;        /* round-robin: which enemy moves next */
 unsigned char enemy_accum;       /* Bresenham accumulator for spreading */
 unsigned int rseed;
+unsigned char port_key;  /* keyboard scan result for asm bridge */
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char coinmap[ROWS * COLS];
@@ -71,12 +68,32 @@ unsigned char timer_frac;  /* frame counter within current second (0-49) */
 /* Buffer for formatting text */
 char txt_buffer[TEXT_SCR_WIDTH + 1];
 
-/* Transient globals for inline-asm sprite routines */
-unsigned int ds_scr;
-const unsigned char *ds_spr_ptr;
-unsigned char ds_attr_v;
-unsigned char ds_row;
-unsigned char ds_col;
+/* SP1 heap for sprite allocation (classic library).
+   Heap lives in the rotation table area (0xF200-0xFFFF) which is
+   unused since we use NR (no-rotation) sprites only. */
+long heap;
+
+void *u_malloc(uint size) { return malloc(size); }
+void u_free(void *addr) { free(addr); }
+
+/* SP1 sprite handles */
+struct sp1_ss *spr_player;
+struct sp1_ss *spr_enemies[4];
+struct sp1_ss *spr_exit_s;
+
+/* SP1 clipping rect for maze area */
+struct sp1_Rect maze_clip = {MAZE_R0, MAZE_C0, ECOLS, EROWS};
+struct sp1_Rect full_screen = {0, 0, 32, 24};
+
+/* SP1 colour callback globals */
+unsigned char sp1_colour;
+unsigned char sp1_cmask;
+
+void colourSpr(unsigned int count, struct sp1_cs *c)
+{
+	c->attr_mask = sp1_cmask;
+	c->attr = sp1_colour;
+}
 
 /* BFS lookup tables: precomputed row/col from linear index,
    eliminates expensive Z80 division by 14 in the BFS inner loop */
@@ -98,7 +115,6 @@ unsigned char bfs_tail_g;
 unsigned char bfs_result_g;
 unsigned int bfs_adj_ptr_g;
 
-#define ATTR_BASE   22528
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
 #define CORR_ATTR   (INK_BLACK | PAPER_BLACK)
@@ -132,36 +148,45 @@ const unsigned char brick[8] = {
 	0b00000000
 };
 
-const unsigned char spr_dot[8]  = {
-	0b00000000,
-	0b00000000,
-	0b00111000,
-	0b01111100,
-	0b01111100,
-	0b01111100,
-	0b00111000,
-	0b00000000
+/* SP1 masked sprite graphics: (mask, graphic) pairs × 8 rows.
+   mask = ~graphic where opaque, 0xFF where transparent.
+   Height=2: content row + transparent overflow row (standard SP1 pattern).
+   Frame pointer points past the top overflow row (column data[16]). */
+
+/* Transparent row: 16 bytes of (0xFF, 0x00) */
+#define SP1_TRANSPARENT_ROW \
+	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00, \
+	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00
+
+unsigned char sp1_dot_data[] = {
+	SP1_TRANSPARENT_ROW,   /* top overflow (LB col) */
+	0xFF,0x00, 0xFF,0x00,
+	0xC7,0x38, 0x83,0x7C,
+	0x83,0x7C, 0x83,0x7C,
+	0xC7,0x38, 0xFF,0x00,
+	SP1_TRANSPARENT_ROW    /* bottom overflow (LB col) */
 };
-const unsigned char spr_enemy[8]= {
-	0b00000000,
-	0b00000000,
-	0b00010000,
-	0b00101000,
-	0b01010100,
-	0b00101000,
-	0b00010000,
-	0b00000000
+unsigned char *sp1_dot_gfx = &sp1_dot_data[16];
+
+unsigned char sp1_enemy_data[] = {
+	SP1_TRANSPARENT_ROW,
+	0xFF,0x00, 0xFF,0x00,
+	0xEF,0x10, 0xD7,0x28,
+	0xAB,0x54, 0xD7,0x28,
+	0xEF,0x10, 0xFF,0x00,
+	SP1_TRANSPARENT_ROW
 };
-const unsigned char spr_exit[8] = {
-	0b00000000,
-	0b10000010,
-	0b01000100,
-	0b00101000,
-	0b00010000,
-	0b00101000,
-	0b01000100,
-	0b10000010
+unsigned char *sp1_enemy_gfx = &sp1_enemy_data[16];
+
+unsigned char sp1_exit_data[] = {
+	SP1_TRANSPARENT_ROW,
+	0xFF,0x00, 0x7D,0x82,
+	0xBB,0x44, 0xD7,0x28,
+	0xEF,0x10, 0xD7,0x28,
+	0xBB,0x44, 0x7D,0x82,
+	SP1_TRANSPARENT_ROW
 };
+unsigned char *sp1_exit_gfx = &sp1_exit_data[16];
 const unsigned char spr_coin[8] = {
 	0b00000000,
 	0b00111100,
@@ -174,17 +199,36 @@ const unsigned char spr_coin[8] = {
 };
 
 
-/* Set attribute for character cell (row, col). */
+/* Set attribute for character cell (row, col).
+   Used for text rows outside SP1-managed area. */
 void set_attr(unsigned char row, unsigned char col,
               unsigned char attr)
 {
 	*zx_cxy2aaddr(col, row) = attr;
 }
 
+/* Helper: set SP1 sprite colour */
+void sp1_set_spr_colour(struct sp1_ss *s, unsigned char attr)
+{
+	sp1_cmask = 0x00;
+	sp1_colour = attr;
+	sp1_IterateSprChar(s, colourSpr);
+}
+
+/* Hide all SP1 sprites (move off-screen) */
+void hide_sprites()
+{
+	static unsigned char i;
+	sp1_MoveSprAbs(spr_player, &maze_clip, 0, 25, 0, 0, 0);
+	for (i = 0; i != 4; ++i)
+		sp1_MoveSprAbs(spr_enemies[i], &maze_clip, 0, 25, 0, 0, 0);
+	sp1_MoveSprAbs(spr_exit_s, &maze_clip, 0, 25, 0, 0, 0);
+}
+
 /* Visited flags and explicit stack for DFS and BFS.
-   Sized for expanded grid (largest use case). */
-unsigned char vis[EROWS * ECOLS];
-unsigned char stk[EROWS * ECOLS];
+   Max index = ROWS*COLS-1 (maze cell grid). */
+unsigned char vis[ROWS * COLS];
+unsigned char stk[ROWS * COLS];
 unsigned char sp;
 
 void generate_maze()
@@ -277,7 +321,6 @@ void add_extra_passages()
 	}
 }
 
-void draw_brick(unsigned char sr, unsigned char sc);
 unsigned char center_x(uchar text_len) __z88dk_fastcall;
 
 void draw_maze()
@@ -325,105 +368,26 @@ void draw_maze()
 
 			*wm++ = w;
 			if (w)
-				draw_brick(sr, sc);
+				sp1_PrintAtInv(sr, sc, WALL_ATTR, 'B');
 			else
-				set_attr(sr, sc, CORR_ATTR);
+				sp1_PrintAtInv(sr, sc, CORR_ATTR, ' ');
 		}
 	}
 }
 
-/* Write an 8-byte bitmap into character cell (sr, sc) and set attr.
-   Unrolled inline asm: INC H steps to the next pixel row within
-   the same character cell (rows are 256 bytes apart in screen RAM). */
-void draw_sprite(unsigned char sr, unsigned char sc,
-                 const unsigned char *spr, unsigned char attr)
-{
-	ds_scr = SCR_ADDR(sr, sc);
-	ds_spr_ptr = spr;
-	ds_row = sr;
-	ds_col = sc;
-	ds_attr_v = attr;
-
-#asm
-	ld hl, (_ds_spr_ptr)
-	ex de, hl           ; DE = sprite data
-	ld hl, (_ds_scr)    ; HL = screen address
-
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-	inc h
-	inc de
-	ld a, (de)
-	ld (hl), a
-
-	; Compute attribute address: 22528 + sr * 32 + sc
-	ld a, (_ds_row)
-	ld l, a
-	ld h, 0
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl          ; HL = sr * 32
-	ld a, (_ds_col)
-	add a, l
-	ld l, a             ; HL = sr * 32 + sc
-	ld bc, 22528
-	add hl, bc          ; HL = attribute address
-	ld a, (_ds_attr_v)
-	ld (hl), a
-#endasm
-}
-
-/* Clear a character cell (just attribute, CORR_ATTR=0). */
-void clear_cell(unsigned char sr, unsigned char sc)
-{
-	*zx_cxy2aaddr(sc, sr) = 0;
-}
-
 void draw_dot(unsigned char gx, unsigned char gy)
 {
-	draw_sprite(SROW(gy), SCOL(gx), spr_dot, PLAYER_ATTR);
-}
-
-void erase_dot(unsigned char gx, unsigned char gy)
-{
-	clear_cell(SROW(gy), SCOL(gx));
+	sp1_MoveSprAbs(spr_player, &maze_clip, sp1_dot_gfx, SROW(gy), SCOL(gx), 0, 0);
 }
 
 void draw_exit(unsigned char gx, unsigned char gy)
 {
-	draw_sprite(SROW(gy), SCOL(gx), spr_exit, EXIT_ATTR);
+	sp1_MoveSprAbs(spr_exit_s, &maze_clip, sp1_exit_gfx, SROW(gy), SCOL(gx), 0, 0);
 }
 
 void snd_step()
 {
 	bit_beep(0, 400);
-	//otherwise keyboard will stop responding - seems that bit_beep disables interrupts
 	intrinsic_ei();
 }
 
@@ -446,7 +410,6 @@ void snd_caught()
 void snd_coin()
 {
 	bit_beep(0, 200);
-	//intrinsic_ei();
 	bit_beep(0, 100);
 	intrinsic_ei();
 }
@@ -461,65 +424,44 @@ void snd_win()
 	intrinsic_ei();
 }
 
-/* Draw a brick-textured 8x8 block at screen char (sr, sc).
-   Hardcoded pixel values avoid sprite data reads entirely. */
-void draw_brick(unsigned char sr, unsigned char sc)
+/* Wait for all keys released, then wait for any key press.
+   Uses direct port scan — works without ROM interrupts. */
+void wait_any_key()
 {
-	ds_scr = SCR_ADDR(sr, sc);
-	ds_row = sr;
-	ds_col = sc;
-	ds_attr_v = WALL_ATTR;
-
 #asm
-	ld hl, (_ds_scr)
-
-	ld a, 247            ; 0b11110111
-	ld (hl), a
-	inc h
-	ld (hl), a
-	inc h
-	ld (hl), a
-	inc h
-	xor a                ; 0x00
-	ld (hl), a
-	inc h
-	ld a, 223            ; 0b11011111
-	ld (hl), a
-	inc h
-	ld (hl), a
-	inc h
-	ld (hl), a
-	inc h
+	; Wait for all keys released (port $00FE reads all rows)
+.wak_loop1
 	xor a
-	ld (hl), a
-
-	; Compute attribute address: 22528 + sr * 32 + sc
-	ld a, (_ds_row)
-	ld l, a
-	ld h, 0
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl
-	add hl, hl          ; HL = sr * 32
-	ld a, (_ds_col)
-	add a, l
-	ld l, a             ; HL = sr * 32 + sc
-	ld bc, 22528
-	add hl, bc          ; HL = attribute address
-	ld a, (_ds_attr_v)
-	ld (hl), a
+	in a, ($FE)
+	and $1F
+	cp $1F
+	jr nz, wak_loop1
+	; Wait for any key pressed
+.wak_loop2
+	xor a
+	in a, ($FE)
+	and $1F
+	cp $1F
+	jr z, wak_loop2
 #endasm
 }
 
-void draw_enemy(unsigned char gx, unsigned char gy)
+/* Wait until all keys are released */
+void wait_key_release()
 {
-	draw_sprite(SROW(gy), SCOL(gx), spr_enemy, ENEMY_ATTR);
+#asm
+.wkr_loop
+	xor a
+	in a, ($FE)
+	and $1F
+	cp $1F
+	jr nz, wkr_loop
+#endasm
 }
 
-void erase_enemy(unsigned char gx, unsigned char gy)
+void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
 {
-	clear_cell(SROW(gy), SCOL(gx));
+	sp1_MoveSprAbs(spr_enemies[n], &maze_clip, sp1_enemy_gfx, SROW(gy), SCOL(gx), 0, 0);
 }
 
 void draw_coin(unsigned char cx, unsigned char cy)
@@ -527,7 +469,7 @@ void draw_coin(unsigned char cx, unsigned char cy)
 	unsigned char gx, gy;
 	gx = (cx << 1) + 1;
 	gy = (cy << 1) + 1;
-	draw_sprite(SROW(gy), SCOL(gx), spr_coin, COIN_ATTR);
+	sp1_PrintAtInv(SROW(gy), SCOL(gx), COIN_ATTR, 'C');
 }
 
 /* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
@@ -580,6 +522,8 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 		coinmap[idx] = 0;
 		coins_left--;
 		score += 10;
+		/* Remove coin tile — SP1 will restore corridor background */
+		sp1_PrintAtInv(SROW(gy), SCOL(gx), CORR_ATTR, ' ');
 		return 1;
 	}
 	return 0;
@@ -637,10 +581,16 @@ void show_hiscores(char rank) __z88dk_fastcall
 	static unsigned char i, r, c;
 	static unsigned char attr;
 
-	zx_cls_attr(PAPER_BLACK | INK_WHITE);
+	hide_sprites();
+	/* Clear screen via SP1 */
+	sp1_ClearRectInv(&full_screen, PAPER_BLACK | INK_WHITE, ' ',
+		SP1_RFLAG_TILE | SP1_RFLAG_COLOUR);
+	sp1_UpdateNow();
+
+
 	static unsigned char len;
 	len = sprintf(txt_buffer, "-= HIGH SCORES =-");
-	gotoxy(center_x(len), 1); 
+	gotoxy(center_x(len), 1);
 	printf(txt_buffer);
 
 	for (i = 0; i != NUM_HISCORES; ++i) {
@@ -664,7 +614,7 @@ void show_hiscores(char rank) __z88dk_fastcall
 	for (c = 4; c != 28; ++c)
 		set_attr(16, c, TITLE_ATTR);
 
-	fgetc_cons();
+	wait_any_key();
 }
 
 /* Build adjacency table from walls[][] for fast BFS.
@@ -935,17 +885,17 @@ char enemy_manhattan(unsigned char exx, unsigned char eyy)
 
 /* Move enemy n one step.
    At odd position (maze cell): use cached BFS, recalc, or random.
-   At even position (corridor): continue in same direction. */
+   At even position (corridor): continue in same direction.
+   SP1 handles background restoration and sprite compositing. */
 void move_enemy(uchar n) __z88dk_fastcall
 {
 	static char dir;
 	static uchar old_ex, old_ey;
-	static unsigned char other;
-	static unsigned char attr;
+	static uchar sn;   /* copy n to static — sccz80 corrupts uchar params across calls */
 
-	old_ex = enx[n];
-	old_ey = eny[n];
-	attr = (n == 0) ? ENEMY_ATTR : (n == 1) ? ENEMY2_ATTR : (n == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+	sn = n;
+	old_ex = enx[sn];
+	old_ey = eny[sn];
 
 	if ((old_ex & 1) && (old_ey & 1)) {
 		/* At maze cell — chase_pct% chase, rest random */
@@ -957,56 +907,31 @@ void move_enemy(uchar n) __z88dk_fastcall
 			dir = enemy_random_dir(old_ex, old_ey);
 	} else {
 		/* In corridor between cells — keep going */
-		dir = last_edir_arr[n];
+		dir = last_edir_arr[sn];
 	}
 	if (dir < 0) return;
-	last_edir_arr[n] = dir;
+	last_edir_arr[sn] = dir;
 
-	erase_enemy(old_ex, old_ey);
-
-	if (dir == 0) enx[n]--;
-	else if (dir == 1) enx[n]++;
-	else if (dir == 2) eny[n]--;
-	else if (dir == 3) eny[n]++;
-
-	/* Redraw exit/player/coin/other enemy if this enemy left their cell */
-	if (old_ex == exit_gx && old_ey == exit_gy)
-		draw_exit(exit_gx, exit_gy);
-	if (old_ex == px && old_ey == py)
-		draw_dot(px, py);
-	{
-		uchar oi;
-		unsigned char oa;
-		for (oi = 0; oi != num_enemies; ++oi) {
-			if (oi == n) continue;
-			if (old_ex == enx[oi] && old_ey == eny[oi]) {
-				oa = (oi == 0) ? ENEMY_ATTR : (oi == 1) ? ENEMY2_ATTR : (oi == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
-				draw_sprite(SROW(eny[oi]), SCOL(enx[oi]), spr_enemy, oa);
-			}
-		}
-	}
-	/* Redraw coin if enemy left a coin cell (coin may still exist
-	   if enemy arrived from a corridor step, not a cell center) */
-	if ((old_ex & 1) && (old_ey & 1)) {
-		uchar ccx, ccy;
-		ccx = old_ex >> 1;
-		ccy = old_ey >> 1;
-		if (coinmap[ccy * COLS + ccx])
-			draw_coin(ccx, ccy);
-	}
+	if (dir == 0) enx[sn]--;
+	else if (dir == 1) enx[sn]++;
+	else if (dir == 2) eny[sn]--;
+	else if (dir == 3) eny[sn]++;
 
 	/* Enemy eats coin if it lands on one */
-	if ((enx[n] & 1) && (eny[n] & 1)) {
+	if ((enx[sn] & 1) && (eny[sn] & 1)) {
 		uchar ccx, ccy;
-		ccx = enx[n] >> 1;
-		ccy = eny[n] >> 1;
+		ccx = enx[sn] >> 1;
+		ccy = eny[sn] >> 1;
 		if (coinmap[ccy * COLS + ccx]) {
 			coinmap[ccy * COLS + ccx] = 0;
 			coins_left--;
+			/* Remove coin tile */
+			sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, ' ');
 		}
 	}
 
-	draw_sprite(SROW(eny[n]), SCOL(enx[n]), spr_enemy, attr);
+	/* Move SP1 sprite to new position */
+	draw_enemy_n(sn, enx[sn], eny[sn]);
 }
 
 /* Pick a random maze cell center in expanded grid, avoiding
@@ -1032,29 +957,21 @@ unsigned char can_move(char dx, char dy)
 }
 
 /* Draw a popup window background: rows 10-14, cols 5-26.
-   Border cells get brick pixels + border_attr; inner cells are cleared + inner_attr. */
+   Uses SP1 tiles: brick for border, space for inner. */
 void draw_popup_bg(unsigned char border_attr, unsigned char inner_attr)
 {
-	static unsigned char r, c, i;
-	static unsigned char *base;
+	static unsigned char r, c;
+	hide_sprites();
 	for (r = 10; r <= 14; ++r) {
 		for (c = 5; c <= 26; ++c) {
-			base = (unsigned char *)SCR_ADDR(r, c);
-			if (r == 10 || r == 14 || c == 5 || c == 26) {
-				for (i = 0; i != 8; ++i) {
-					*base = brick[i];
-					SC_NEXT_LINE(base);
-				}
-				set_attr(r, c, border_attr);
-			} else {
-				for (i = 0; i != 8; ++i) {
-					*base = 0;
-					SC_NEXT_LINE(base);
-				}
-				set_attr(r, c, inner_attr);
-			}
+			if (r == 10 || r == 14 || c == 5 || c == 26)
+				sp1_PrintAtInv(r, c, border_attr, 'B');
+			else
+				sp1_PrintAtInv(r, c, inner_attr, ' ');
 		}
 	}
+	sp1_UpdateNow();
+
 }
 
 /* Re-apply inner_attr to text rows 11-13, cols 6-25 (undoes printf attr side-effects). */
@@ -1169,11 +1086,73 @@ main()
 		erow_x_ecols[rank] = rank * ECOLS;
 	}
 
+	/* Install IM2 null interrupt handler.
+	   This replaces the ROM IM1 handler (which uses IY and corrupts SP1).
+	   Null ISR just does EI;RETI — no IY access, no memory corruption.
+	   Vector table: 257 bytes at $D000 filled with $D1.
+	   ISR at $D1D1 (in free gap between $D100 and SP1 at $D1ED). */
+	intrinsic_di();
+	memset((void *)0xD000, 0xD1, 257);
+	*((unsigned char *)0xD1D1) = 0xFB;  /* EI opcode */
+	*((unsigned char *)0xD1D2) = 0xED;  /* RETI prefix */
+	*((unsigned char *)0xD1D3) = 0x4D;  /* RETI opcode */
+#asm
+	ld a, $D0
+	ld i, a
+	im 2
+#endasm
+	intrinsic_ei();
+
+	/* Initialize SP1 sprite engine */
+	heap = 0L;
+	sbrk((void *)0xF200, 0x0DFE);  /* rotation table area, unused with NR sprites */
+
+	sp1_Initialize(SP1_IFLAG_OVERWRITE_TILES | SP1_IFLAG_OVERWRITE_DFILE,
+		INK_BLACK | PAPER_BLACK, ' ');
+	sp1_TileEntry('B', brick);
+	sp1_TileEntry('C', spr_coin);
+
+	/* Create SP1 sprites: single-column NR (non-rotated), height=2.
+	   xthresh=0 prevents the only column from being suppressed at hrot=0. */
+	spr_player = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 0);
+	spr_player->xthresh = 0;
+	spr_player->ythresh = 1;
+	sp1_set_spr_colour(spr_player, PLAYER_ATTR);
+
+	spr_exit_s = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 1);
+	spr_exit_s->xthresh = 0;
+	spr_exit_s->ythresh = 1;
+	sp1_set_spr_colour(spr_exit_s, EXIT_ATTR);
+
+	{
+		static unsigned char ei;
+		static unsigned char ea;
+		for (ei = 0; ei != 4; ++ei) {
+			spr_enemies[ei] = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 2);
+			spr_enemies[ei]->xthresh = 0;
+			spr_enemies[ei]->ythresh = 1;
+			ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR :
+			     (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+			sp1_set_spr_colour(spr_enemies[ei], ea);
+		}
+	}
+
+	/* Move all sprites off-screen initially */
+	hide_sprites();
+
+	sp1_Invalidate(&full_screen);
+	sp1_UpdateNow();
+
 	rseed = 0;
 
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
-		zx_cls_attr(PAPER_BLACK | INK_WHITE);
+		/* Clear screen via SP1 */
+		hide_sprites();
+		sp1_ClearRectInv(&full_screen, PAPER_BLACK | INK_WHITE, ' ',
+			SP1_RFLAG_TILE | SP1_RFLAG_COLOUR);
+		sp1_UpdateNow();
+
 		{
 			static unsigned char len, c;
 			len = sprintf(txt_buffer, "-= MAZE RUNNER =-");
@@ -1211,7 +1190,7 @@ main()
 			rseed++;
 			k = getk_inkey();
 		}
-		while (getk()) ;  /* wait for key release */
+		wait_key_release();
 		if (rseed == 0) rseed = 42;
 		srand(rseed);
 		difficulty = k - '0';
@@ -1255,7 +1234,12 @@ main()
 		zx_border(INK_BLACK);
 
 		level++;
-		zx_cls_attr(INK_WHITE | PAPER_BLACK);
+		/* Clear screen via SP1 for new level */
+		hide_sprites();
+		sp1_ClearRectInv(&full_screen, INK_WHITE | PAPER_BLACK, ' ',
+			SP1_RFLAG_TILE | SP1_RFLAG_COLOUR);
+		sp1_UpdateNow();
+
 		{
 			static unsigned char len;
 			static char *dname;
@@ -1269,6 +1253,7 @@ main()
 		generate_maze();
 		add_extra_passages();
 		build_adj();
+
 		draw_maze();
 		memset(vis, 0, ROWS * COLS);  /* Clear for BFS after maze gen */
 
@@ -1300,32 +1285,66 @@ main()
 		draw_exit(exit_gx, exit_gy);
 		{
 			static unsigned char ei;
-			static unsigned char ea;
-			for (ei = 0; ei != num_enemies; ++ei) {
-				ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR : (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
-				draw_sprite(SROW(eny[ei]), SCOL(enx[ei]), spr_enemy, ea);
-			}
+			for (ei = 0; ei != num_enemies; ++ei)
+				draw_enemy_n(ei, enx[ei], eny[ei]);
 		}
 		draw_dot(px, py);
+		sp1_UpdateNow();
+
 		show_score();
 		show_timer();
 
 		while (1) {
-			intrinsic_halt();  /* sync to 50Hz frame */
+			intrinsic_halt();  /* sync to 50Hz frame (IM2 null ISR — safe) */
 
-			/* --- Player input --- */
-			k = getk();
+			/* --- Player input (direct port read) ---
+			   ZX Spectrum keyboard: IN port 0xFE, high byte selects half-row.
+			   Bit=0 means key pressed.
+			   O/P row: port 0xDFFE  — bit0=P, bit1=O
+			   Q row:   port 0xFBFE  — bit0=Q
+			   A row:   port 0xFDFE  — bit0=A */
 			dx = 0;
 			dy = 0;
-
+			port_key = 0;
+#asm
+			ld bc, $DFFE    ; O/P row
+			in a, (c)
+			bit 1, a
+			jr nz, _not_o
+			ld a, 'o'
+			ld (_port_key), a
+_not_o:
+			ld bc, $DFFE
+			in a, (c)
+			bit 0, a
+			jr nz, _not_p
+			ld a, 'p'
+			ld (_port_key), a
+_not_p:
+			ld bc, $FBFE    ; Q row
+			in a, (c)
+			bit 0, a
+			jr nz, _not_q
+			ld a, 'q'
+			ld (_port_key), a
+_not_q:
+			ld bc, $FDFE    ; A row
+			in a, (c)
+			bit 0, a
+			jr nz, _not_a
+			ld a, 'a'
+			ld (_port_key), a
+_not_a:
+#endasm
+			k = port_key;
 			if (k) {
 				if (key_delay > 0) {
 					key_delay--;
 				} else {
-					if (k == 'o' || k == 'O') dx = -1;
-					if (k == 'p' || k == 'P') dx = 1;
-					if (k == 'q' || k == 'Q') dy = -1;
-					if (k == 'a' || k == 'A') dy = 1;
+					if (k == 'o') dx = -1;
+					if (k == 'p') dx = 1;
+					if (k == 'q') dy = -1;
+					if (k == 'a') dy = 1;
 				}
 			} else {
 				key_delay = 0;
@@ -1334,7 +1353,6 @@ main()
 			if (dx || dy) {
 				key_delay = KEY_REPEAT;
 				if (can_move(dx, dy)) {
-					erase_dot(px, py);
 					px += dx;
 					py += dy;
 					draw_dot(px, py);
@@ -1344,6 +1362,7 @@ main()
 						zx_border(INK_YELLOW);
 						snd_coin();
 						zx_border(INK_BLACK);
+				
 						show_score();
 					}
 
@@ -1357,10 +1376,9 @@ main()
 
 					if (px == exit_gx &&
 					    py == exit_gy) {
-						/* Bonus: 50 pts + 1 per second remaining */
 						score += 50 + timer_sec;
 						win_cut_scene();
-						fgetc_cons();
+						wait_any_key();
 						break;
 					}
 					snd_step();
@@ -1370,10 +1388,6 @@ main()
 			}
 
 			/* --- Enemy moves spread across frames --- */
-			/* Bresenham: accumulate num_enemies per frame, fire one
-			   move each time accum >= enemy_frames.  Over enemy_frames
-			   frames exactly num_enemies moves happen (one per enemy),
-			   but at most 1-2 per frame instead of all N at once. */
 			enemy_accum += num_enemies;
 			while (enemy_accum >= enemy_frames) {
 				enemy_accum -= enemy_frames;
@@ -1385,18 +1399,22 @@ main()
 					enemy_next = 0;
 			}
 
+			/* --- Render all SP1 changes this frame --- */
+			sp1_UpdateNow();
+
 			/* --- Timer countdown --- */
 			timer_frac--;
 			if (timer_frac == 0) {
 				timer_frac = 50;
 				if (timer_sec > 0) {
 					timer_sec--;
+			
 					show_timer();
 					if (timer_sec == 10)
 						zx_border(INK_RED);
 					if (timer_sec == 0) {
 						time_up_cut_scene();
-						fgetc_cons();
+						wait_any_key();
 						rank = update_hiscores();
 						show_hiscores(rank);
 						score = 0;
@@ -1409,10 +1427,9 @@ main()
 
 			if (caught) {
 				game_over_cut_scene();
-				fgetc_cons();
+				wait_any_key();
 				rank = update_hiscores();
 				show_hiscores(rank);
-				/* Reset for new game */
 				score = 0;
 				level = 0;
 				game_over = 1;

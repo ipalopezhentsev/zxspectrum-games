@@ -8,7 +8,7 @@ Cross-compiled C project targeting the ZX Spectrum (Z80) via z88dk, producing .T
 Compile with z88dk's `zcc` targeting the ZX Spectrum:
 
 ```sh
-zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -create-app
+zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -lsp1-zx -create-app
 ```
 
 This produces a `.tap` file loadable in a ZX Spectrum emulator.
@@ -87,23 +87,72 @@ This produces a `.tap` file loadable in a ZX Spectrum emulator.
 - Text-based separators (`---`) are more reliable than pixel separator lines.
 - `plot()`/`unplot()` can corrupt pixel data and attributes unpredictably — prefer direct screen memory writes for game sprites (see above)
 
+## SP1 software sprite library — CRITICAL
+
+### IY register corruption — solved with IM2
+SP1 functions corrupt the Z80 IY register. The default ROM IM1 interrupt handler relies on IY — if it fires after SP1 has changed IY, the ROM handler writes to wrong memory, corrupting SP1 state and making sprites disappear.
+
+**Solution: IM2 null interrupt handler.** At startup, install a custom IM2 ISR that does nothing (`ei; reti`). This completely eliminates the IY corruption problem — no DI/EI wrapping needed around SP1 calls.
+
+```c
+/* IM2 setup — vector table at $D000, null ISR at $D1D1 */
+intrinsic_di();
+memset((void *)0xD000, 0xD1, 257);
+*((unsigned char *)0xD1D1) = 0xFB;  /* EI */
+*((unsigned char *)0xD1D2) = 0xED;  /* RETI prefix */
+*((unsigned char *)0xD1D3) = 0x4D;  /* RETI opcode */
+/* ld a, $D0 / ld i, a / im 2  (in asm) */
+intrinsic_ei();
+```
+
+**Consequences of IM2:**
+- SP1 calls are safe with interrupts enabled — no DI/EI ceremony needed
+- `getk()` and `fgetc_cons()` no longer work (ROM keyboard handler doesn't run). Use direct port reads (`wait_any_key()`, `wait_key_release()`, `getk_inkey()`) instead
+- z88dk classic library `printf`/`gotoxy` work fine — they don't use the ROM or IY
+- `bit_beep()` disables interrupts internally — always call `intrinsic_ei()` after it
+
+### SP1 sprite configuration for single-column NR sprites
+- Use `SP1_DRAW_MASK2NR` (non-rotated) for sprites that don't need pixel-level scrolling
+- Set `spr->xthresh = 0` — default xthresh=1 suppresses the only column at hrot=0, making sprites invisible
+- Set `spr->ythresh = 1` — ythresh=0 causes the transparent bottom overflow row to paint sprite attribute to the cell below
+- Height=2 for 8x8 content (1 content row + 1 overflow row)
+- Sprite data format: 48 bytes (top overflow + content + bottom overflow), each row = mask byte + graphic byte
+
+### SP1 memory layout
+- Update array: $D200
+- Tile array: $F000
+- Heap for sprites: `sbrk((void *)0xF200, 0x0DFE)` — rotation table area, unused with NR sprites
+- Stack: $D000 (`#pragma output STACKPTR=0xD000`)
+- BSS ends ~$CBB9
+
+### SP1 sprite data — no `const`
+Do NOT use `const` on SP1 sprite graphic arrays. SP1 examples never use const, and it may affect section placement causing SP1 to not find the data.
+
 ## Game loop and input — frame-based design
 
 ### Frame-synced main loop
-- Use `intrinsic_halt()` (from `<intrinsic.h>`) at the top of each game loop iteration to sync to the 50Hz interrupt. Each iteration = exactly one frame (20ms)
+- Use `intrinsic_halt()` (from `<intrinsic.h>`) at the top of each game loop iteration to sync to the 50Hz IM2 interrupt
 - This gives consistent, predictable timing for all game mechanics
+- Interrupts stay enabled throughout — IM2 null handler makes this safe
 
-### Keyboard input
-- `getk()` reads from system variable 23560, updated by the ROM interrupt at 50Hz. Good for game input — fast, no debounce overhead
-- `getk_inkey()` scans keyboard hardware directly via I/O port $FE — responds instantly to physical key state, with debouncing. Better for "press any key" / RNG seeding (where you need precise timing), worse for game controls (debounce adds latency, rejects simultaneous keys)
-- For movement: read `getk()` each frame, use a frame counter for key repeat delay (e.g. `KEY_REPEAT = 4` frames = 80ms between moves while held). Reset delay to 0 on key release for instant response to new presses
+### Keyboard input — direct port reads (required with IM2)
+- **Use direct Z80 port reads via inline asm** — reads physical key state instantly, ~12 T-states per key check
+- ZX Spectrum keyboard ports (active low — bit=0 means pressed):
+  - O/P row: port `$DFFE` — bit0=P, bit1=O
+  - Q row: port `$FBFE` — bit0=Q
+  - A row: port `$FDFE` — bit0=A
+  - 1-5 row: port `$F7FE` — bit0=1, bit1=2, bit2=3, bit3=4, bit4=5
+  - All rows: port `$00FE` — AND of all rows, for "any key pressed" check
+- Use a global variable as asm bridge (e.g. `unsigned char port_key`) since static locals have mangled asm names
+- `getk()` and `fgetc_cons()` do NOT work with IM2 (ROM keyboard handler doesn't run). Use `wait_any_key()`, `wait_key_release()`, or `getk_inkey()` instead
+- For movement: use frame counter for key repeat delay (e.g. `KEY_REPEAT = 4` frames = 80ms)
 
 ### Enemy/timer independence
 - **Never reset the enemy tick counter when the player moves.** This causes enemies to freeze while the player holds a key
 - Enemy movement and player input must run on independent frame counters — both increment every frame regardless of what the other does
 
 ### Sound and blocking
-- `bit_beep()` blocks the CPU and disables interrupts. Always call `intrinsic_ei()` after to re-enable interrupts
+- `bit_beep()` blocks the CPU and disables interrupts internally. Always call `intrinsic_ei()` after to re-enable the IM2 interrupt
 - Blocking sound during gameplay freezes everything — keep beeps very short (duration 0 or 1)
 
 ## sccz80 compiler bugs — CRITICAL
@@ -142,7 +191,7 @@ Global variables as `unsigned char` work correctly — the compiler loads/stores
 ### C-level optimization rules (from z88dk WritingOptimalCode wiki)
 
 #### Build flags
-- Use `zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -create-app` for maximum runtime speed
+- Use `zcc +zx -vn -O2 --opt-code-speed -o out/maze.bin maze.c -lndos -lsp1-zx -create-app` for maximum runtime speed
 - `-O2 --opt-code-speed` enables inlined 16-bit get/set, faster unsigned char multiply, and peephole optimizations
 - Selective: `--opt-code-speed=inlineints,ucharmult` for specific speedups without full code size increase
 - **Remove debug flags** (`--c-code-in-asm`, `-Cc--gcline`) before final builds — they degrade peephole optimization
