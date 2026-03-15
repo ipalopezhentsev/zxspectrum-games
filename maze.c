@@ -5,6 +5,7 @@
 #include <features.h>
 #include <sound.h>
 #include <intrinsic.h>
+#include <input.h>
 #include <arch/zx/spectrum.h>
 #include <arch/zx/sprites/sp1.h>
 #include <malloc.h>
@@ -41,7 +42,8 @@ unsigned char last_edir_arr[4];  /* last direction each enemy moved */
 unsigned char enemy_next;        /* round-robin: which enemy moves next */
 unsigned char enemy_accum;       /* Bresenham accumulator for spreading */
 unsigned int rseed;
-unsigned char port_key;  /* keyboard scan result for asm bridge */
+/* User-defined keys for in_JoyKeyboard() — OPQA directions */
+struct in_UDK udk;
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char coinmap[ROWS * COLS];
@@ -424,39 +426,17 @@ void snd_win()
 	intrinsic_ei();
 }
 
-/* Wait for all keys released, then wait for any key press.
-   Uses direct port scan — works without ROM interrupts. */
+/* Wait for all keys released, then wait for any key press. */
 void wait_any_key()
 {
-#asm
-	; Wait for all keys released (port $00FE reads all rows)
-.wak_loop1
-	xor a
-	in a, ($FE)
-	and $1F
-	cp $1F
-	jr nz, wak_loop1
-	; Wait for any key pressed
-.wak_loop2
-	xor a
-	in a, ($FE)
-	and $1F
-	cp $1F
-	jr z, wak_loop2
-#endasm
+	in_WaitForNoKey();
+	in_WaitForKey();
 }
 
 /* Wait until all keys are released */
 void wait_key_release()
 {
-#asm
-.wkr_loop
-	xor a
-	in a, ($FE)
-	and $1F
-	cp $1F
-	jr nz, wkr_loop
-#endasm
+	in_WaitForNoKey();
 }
 
 void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
@@ -1145,6 +1125,13 @@ main()
 
 	rseed = 0;
 
+	/* Configure keyboard joystick: O=left, P=right, Q=up, A=down */
+	udk.left  = in_LookupKey('o');
+	udk.right = in_LookupKey('p');
+	udk.up    = in_LookupKey('q');
+	udk.down  = in_LookupKey('a');
+	udk.fire  = 0;
+
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
 		/* Clear screen via SP1 */
@@ -1188,7 +1175,7 @@ main()
 		k = 0;
 		while (k != '1' && k != '2' && k != '3' && k != '4') {
 			rseed++;
-			k = getk_inkey();
+			k = in_Inkey();
 		}
 		wait_key_release();
 		if (rseed == 0) rseed = 42;
@@ -1297,54 +1284,18 @@ main()
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame (IM2 null ISR — safe) */
 
-			/* --- Player input (direct port read) ---
-			   ZX Spectrum keyboard: IN port 0xFE, high byte selects half-row.
-			   Bit=0 means key pressed.
-			   O/P row: port 0xDFFE  — bit0=P, bit1=O
-			   Q row:   port 0xFBFE  — bit0=Q
-			   A row:   port 0xFDFE  — bit0=A */
+			/* --- Player input (in_JoyKeyboard scans OPQA) --- */
 			dx = 0;
 			dy = 0;
-			port_key = 0;
-#asm
-			ld bc, $DFFE    ; O/P row
-			in a, (c)
-			bit 1, a
-			jr nz, _not_o
-			ld a, 'o'
-			ld (_port_key), a
-_not_o:
-			ld bc, $DFFE
-			in a, (c)
-			bit 0, a
-			jr nz, _not_p
-			ld a, 'p'
-			ld (_port_key), a
-_not_p:
-			ld bc, $FBFE    ; Q row
-			in a, (c)
-			bit 0, a
-			jr nz, _not_q
-			ld a, 'q'
-			ld (_port_key), a
-_not_q:
-			ld bc, $FDFE    ; A row
-			in a, (c)
-			bit 0, a
-			jr nz, _not_a
-			ld a, 'a'
-			ld (_port_key), a
-_not_a:
-#endasm
-			k = port_key;
+			k = in_JoyKeyboard(&udk);
 			if (k) {
 				if (key_delay > 0) {
 					key_delay--;
 				} else {
-					if (k == 'o') dx = -1;
-					if (k == 'p') dx = 1;
-					if (k == 'q') dy = -1;
-					if (k == 'a') dy = 1;
+					if (k & in_LEFT)  dx = -1;
+					if (k & in_RIGHT) dx = 1;
+					if (k & in_UP)    dy = -1;
+					if (k & in_DOWN)  dy = 1;
 				}
 			} else {
 				key_delay = 0;

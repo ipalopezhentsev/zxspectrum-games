@@ -107,7 +107,7 @@ intrinsic_ei();
 
 **Consequences of IM2:**
 - SP1 calls are safe with interrupts enabled — no DI/EI ceremony needed
-- `getk()` and `fgetc_cons()` no longer work (ROM keyboard handler doesn't run). Use direct port reads (`wait_any_key()`, `wait_key_release()`, `getk_inkey()`) instead
+- `getk()` and `fgetc_cons()` no longer work (ROM keyboard handler doesn't run). Use `<input.h>` functions instead: `in_WaitForKey()`, `in_WaitForNoKey()`, `in_Inkey()`, `in_KeyPressed()`, `in_JoyKeyboard()`
 - z88dk classic library `printf`/`gotoxy` work fine — they don't use the ROM or IY
 - `bit_beep()` disables interrupts internally — always call `intrinsic_ei()` after it
 
@@ -135,17 +135,21 @@ Do NOT use `const` on SP1 sprite graphic arrays. SP1 examples never use const, a
 - This gives consistent, predictable timing for all game mechanics
 - Interrupts stay enabled throughout — IM2 null handler makes this safe
 
-### Keyboard input — direct port reads (required with IM2)
-- **Use direct Z80 port reads via inline asm** — reads physical key state instantly, ~12 T-states per key check
-- ZX Spectrum keyboard ports (active low — bit=0 means pressed):
+### Keyboard input — `<input.h>` library (IM2-safe)
+- **Use `<input.h>` functions** — they do direct port reads internally, work with IM2
+- `in_JoyKeyboard(&udk)` — returns `F000RLDU` bitmask for user-defined keys. Set up `struct in_UDK` with scancodes from `in_LookupKey()` at init. Use `in_LEFT`, `in_RIGHT`, `in_UP`, `in_DOWN`, `in_FIRE` masks to decode
+- `in_Inkey()` — returns ASCII of single key press or 0 (instantaneous, no debounce)
+- `in_KeyPressed(scancode)` — check specific key via 16-bit scancode from `in_LookupKey()`
+- `in_WaitForKey()` / `in_WaitForNoKey()` — blocking waits for key press/release
+- `in_LookupKey(char)` — convert ASCII to 16-bit scancode (call once at init, cache result)
+- `getk()` and `fgetc_cons()` do NOT work with IM2 (ROM keyboard handler doesn't run)
+- For movement: use frame counter for key repeat delay (e.g. `KEY_REPEAT = 4` frames = 80ms)
+- ZX Spectrum keyboard ports (for reference, active low — bit=0 means pressed):
   - O/P row: port `$DFFE` — bit0=P, bit1=O
   - Q row: port `$FBFE` — bit0=Q
   - A row: port `$FDFE` — bit0=A
   - 1-5 row: port `$F7FE` — bit0=1, bit1=2, bit2=3, bit3=4, bit4=5
   - All rows: port `$00FE` — AND of all rows, for "any key pressed" check
-- Use a global variable as asm bridge (e.g. `unsigned char port_key`) since static locals have mangled asm names
-- `getk()` and `fgetc_cons()` do NOT work with IM2 (ROM keyboard handler doesn't run). Use `wait_any_key()`, `wait_key_release()`, or `getk_inkey()` instead
-- For movement: use frame counter for key repeat delay (e.g. `KEY_REPEAT = 4` frames = 80ms)
 
 ### Enemy/timer independence
 - **Never reset the enemy tick counter when the player moves.** This causes enemies to freeze while the player holds a key
