@@ -69,6 +69,11 @@ struct in_UDK udk;
 unsigned char coinmap[ROWS * COLS];
 uint score;
 unsigned char coins_left;
+unsigned char coins_collected;
+unsigned char coins_needed;   /* min coins to open exit */
+unsigned char total_coins;
+unsigned char exit_open;      /* 1 = exit unlocked */
+unsigned char hud_dirty;      /* 1 = redraw coins/score HUD after sp1_UpdateNow */
 unsigned char level;
 unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard, 4=Nightmare */
 unsigned char num_enemies;   /* 1, 2, 3, or 4 */
@@ -105,6 +110,10 @@ long heap;
 
 void *u_malloc(uint size) { return malloc(size); }
 void u_free(void *addr) { free(addr); }
+
+/* Forward declarations */
+void show_coins_hud();
+void open_exit_gate();
 
 /* SP1 sprite handles */
 struct sp1_ss *spr_player;
@@ -154,6 +163,7 @@ unsigned int bfs_adj_ptr_g;
 #define ENEMY3_ATTR (BRIGHT | INK_CYAN | PAPER_BLACK)
 #define ENEMY4_ATTR (BRIGHT | INK_WHITE | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
+#define EXIT_LOCKED_ATTR (INK_RED | PAPER_BLACK)
 #define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
@@ -528,6 +538,22 @@ void snd_coin()
 	intrinsic_ei();
 }
 
+void snd_exit_open()
+{
+	bit_beep(5, 300);
+	bit_beep(5, 200);
+	bit_beep(10, 100);
+	intrinsic_ei();
+}
+
+void snd_coins_lost()
+{
+	bit_beep(15, 800);
+	intrinsic_ei();
+	bit_beep(20, 1000);
+	intrinsic_ei();
+}
+
 void snd_win()
 {
 	bit_beep(15, 150);
@@ -593,15 +619,21 @@ void draw_coin(unsigned char cx, unsigned char cy)
 	sp1_PrintAtInv(SROW(gy), SCOL(gx), COIN_ATTR, 'C');
 }
 
-/* Place coins on ~40% of maze cells, avoiding start/exit/enemies */
+/* Place exactly target coins on maze cells.
+   Pass 1: spaced placement (no adjacent coins, avoid entities).
+   Pass 2: fill remaining in any free corridor cell. */
 void place_coins()
 {
-	static unsigned char target, attempts, idx, cx, cy, gx, gy;
+	static unsigned char target, idx, cx, cy, gx, gy;
+	static unsigned char skip, ei;
+	static int attempts;
 	coins_left = 0;
 	memset(coinmap, 0, ROWS * COLS);
 
 	target = (ROWS * COLS) * 2 / 5;
-	attempts = target * 4;
+
+	/* Pass 1: place with spacing constraint */
+	attempts = 1000;
 	while (coins_left < target && attempts > 0) {
 		attempts--;
 		idx = rand() % (ROWS * COLS);
@@ -610,21 +642,37 @@ void place_coins()
 		cx = idx - cy * COLS;
 		gx = cx * 2 + 1;
 		gy = cy * 2 + 1;
-		/* Skip player, exit, enemies */
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
-		{
-			unsigned char skip, ei;
-			skip = 0;
-			for (ei = 0; ei != num_enemies; ++ei)
-				if (gx == enx[ei] && gy == eny[ei]) skip = 1;
-			if (skip) continue;
-		}
-		/* No adjacent coins — min 2-cell gap */
+		skip = 0;
+		for (ei = 0; ei != num_enemies; ++ei)
+			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
+		if (skip) continue;
 		if (cx > 0 && coinmap[idx - 1]) continue;
 		if (cx < COLS - 1 && coinmap[idx + 1]) continue;
 		if (cy > 0 && coinmap[idx - COLS]) continue;
 		if (cy < ROWS - 1 && coinmap[idx + COLS]) continue;
+		coinmap[idx] = 1;
+		coins_left++;
+		draw_coin(cx, cy);
+	}
+
+	/* Pass 2: relax spacing — fill any free corridor cell */
+	attempts = 1000;
+	while (coins_left < target && attempts > 0) {
+		attempts--;
+		idx = rand() % (ROWS * COLS);
+		if (coinmap[idx]) continue;
+		cy = idx / COLS;
+		cx = idx - cy * COLS;
+		gx = cx * 2 + 1;
+		gy = cy * 2 + 1;
+		if (gx == px && gy == py) continue;
+		if (gx == exit_gx && gy == exit_gy) continue;
+		skip = 0;
+		for (ei = 0; ei != num_enemies; ++ei)
+			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
+		if (skip) continue;
 		coinmap[idx] = 1;
 		coins_left++;
 		draw_coin(cx, cy);
@@ -671,18 +719,44 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 	if (coinmap[idx]) {
 		coinmap[idx] = 0;
 		coins_left--;
+		coins_collected++;
 		score += 10;
 		/* Remove coin tile — SP1 will restore corridor background */
 		sp1_PrintAtInv(SROW(gy), SCOL(gx), CORR_ATTR, 'F');
+		hud_dirty = 1;
+		/* Check if we just hit the threshold to open the exit */
+		if (!exit_open && coins_collected >= coins_needed)
+			open_exit_gate();
 		return 1;
 	}
 	return 0;
+}
+
+/* Set printf ink/paper from an attribute byte */
+void set_print_attr(unsigned char a) __z88dk_fastcall
+{
+	zx_setink(a & 7);
+	zx_setpaper((a >> 3) & 7);
+	/* bright bit: poke ATTR_P directly */
+	if (a & BRIGHT)
+		*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	else
+		*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+}
+
+/* Force all cells in a row to a given attribute */
+void set_row_attr(unsigned char row, unsigned char attr)
+{
+	static unsigned char c;
+	for (c = 0; c != 32; ++c)
+		set_attr(row, c, attr);
 }
 
 /* Display score on the title row */
 void show_score()
 {
 	static unsigned char len;
+	set_print_attr(INK_WHITE | PAPER_BLACK);
 	len = sprintf(txt_buffer, "SCORE: %06d", score);
 	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
@@ -693,34 +767,66 @@ void show_timer()
 	static unsigned char len, c;
 	static unsigned char m, s;
 	static unsigned char attr;
+	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
+	set_print_attr(attr);
 	/* divmod 60 via subtraction — faster than library divide on Z80 */
 	s = timer_sec;
 	m = 0;
 	while (s >= 60) { s -= 60; m++; }
 	len = sprintf(txt_buffer, "TIME %d:%02d", m, s);
 	gotoxy(center_x(len), 0); printf(txt_buffer);
-	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
-	if (timer_sec <= 10 || timer_sec == time_limit) {
-		for (c = 12; c != 20; ++c)
-			set_attr(0, c, attr);
-	}
+	set_print_attr(INK_WHITE | PAPER_BLACK);
 }
 
 /* Show/hide GUN indicator on HUD */
 void show_gun_hud()
 {
-	static unsigned char c;
 	if (has_gun) {
+		set_print_attr(GUN_ATTR);
 		gotoxy(0, 0);
 		printf("GUN");
-		for (c = 0; c != 2; ++c)
-			set_attr(0, c, GUN_ATTR);
 	} else {
+		set_print_attr(INK_WHITE | PAPER_BLACK);
 		gotoxy(0, 0);
 		printf("   ");
-		for (c = 0; c != 2; ++c)
-			set_attr(0, c, INK_WHITE | PAPER_BLACK);
 	}
+	set_print_attr(INK_WHITE | PAPER_BLACK);
+}
+
+/* Show coins remaining until exit opens, right side of row 0 */
+void show_coins_hud()
+{
+	static unsigned char len, attr, remain;
+	remain = (coins_collected >= coins_needed) ? 0 :
+	         coins_needed - coins_collected;
+	attr = exit_open ? (BRIGHT | INK_GREEN | PAPER_BLACK) :
+	                   (INK_RED | PAPER_BLACK);
+	set_print_attr(attr);
+	//sprintf(txt_buffer, "COINS TO OPEN EXIT: %02d", remain);
+	sprintf(txt_buffer, "%02d", remain);
+	gotoxy(42, 0); printf(txt_buffer);
+	set_print_attr(INK_WHITE | PAPER_BLACK);
+}
+
+/* Fix all row-0 attrs: clear to black, then reapply coloured sections */
+void fix_row0_attrs()
+{
+	set_row_attr(0, INK_WHITE | PAPER_BLACK);
+	show_gun_hud();
+	show_timer();
+	show_coins_hud();
+}
+
+/* Unlock the exit: change sprite colour, play sound, update HUD */
+void open_exit_gate()
+{
+	exit_open = 1;
+	sp1_set_spr_colour(spr_exit_s, EXIT_ATTR);
+	set_attr(MAZE_R0 + exit_gy, MAZE_C0 + exit_gx, EXIT_ATTR);
+	sp1_UpdateNow();
+	zx_border(INK_YELLOW);
+	snd_exit_open();
+	zx_border(INK_BLACK);
 }
 
 /* Fire a shot in direction pdir. Traces through corridor cells,
@@ -1198,6 +1304,7 @@ void advance_enemy_anim(unsigned char n)
 				coinmap[ccy * COLS + ccx] = 0;
 				coins_left--;
 				sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, 'F');
+				hud_dirty = 1;
 			}
 		}
 	}
@@ -1267,8 +1374,7 @@ void win_cut_scene()
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_GREEN,
 		BRIGHT | INK_WHITE  | PAPER_GREEN);
-	*((unsigned char *)ATTR_P_ADDR) =
-		BRIGHT | INK_WHITE | PAPER_GREEN;
+	set_print_attr(BRIGHT | INK_WHITE | PAPER_GREEN);
 	
 	static unsigned char len;
 	len = sprintf(txt_buffer, "** ESCAPED! **");
@@ -1280,6 +1386,25 @@ void win_cut_scene()
 	popup_fix_attrs(BRIGHT | INK_BLACK | PAPER_GREEN);
 }
 
+void coins_lost_cut_scene()
+{
+	zx_border(INK_RED);
+	snd_coins_lost();
+	zx_border(INK_BLACK);
+	draw_popup_bg(
+		BRIGHT | INK_YELLOW | PAPER_RED,
+		BRIGHT | INK_WHITE  | PAPER_RED);
+	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
+	static unsigned char len;
+	len = sprintf(txt_buffer, "** ENEMIES ATE TOO MANY COINS! **");
+	gotoxy(center_x(len), 11); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Score: %d", score);
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+	len = sprintf(txt_buffer, "Press any key...");
+	gotoxy(center_x(len), 13); printf(txt_buffer);
+	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
+}
+
 void game_over_cut_scene()
 {
 	zx_border(INK_RED);
@@ -1288,8 +1413,7 @@ void game_over_cut_scene()
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_RED,
 		BRIGHT | INK_WHITE  | PAPER_RED);
-	*((unsigned char *)ATTR_P_ADDR) =
-		BRIGHT | INK_WHITE | PAPER_RED;
+	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
 	static unsigned char len;
 	len = sprintf(txt_buffer, "** CAUGHT! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
@@ -1308,8 +1432,7 @@ void time_up_cut_scene()
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_RED,
 		BRIGHT | INK_WHITE  | PAPER_RED);
-	*((unsigned char *)ATTR_P_ADDR) =
-		BRIGHT | INK_WHITE | PAPER_RED;
+	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
 	static unsigned char len;
 	len = sprintf(txt_buffer, "** TIME UP! **");
 	gotoxy(center_x(len), 11); printf(txt_buffer);
@@ -1331,7 +1454,7 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 	gx = c - MAZE_C0;
 	if (wallmap[(unsigned int)gy * ECOLS + gx]) return WALL_ATTR;
 	/* Entity positions — checked before coins so sprites stay coloured */
-	if (gx == exit_gx && gy == exit_gy) return EXIT_ATTR;
+	if (gx == exit_gx && gy == exit_gy) return exit_open ? EXIT_ATTR : EXIT_LOCKED_ATTR;
 	if (gx == px && gy == py) return PLAYER_ATTR;
 	{
 		static unsigned char ei;
@@ -1416,12 +1539,12 @@ void level_intro()
 	bit_beep(10, 180); intrinsic_ei();
 
 	for (radius = 7; radius != 0; --radius) {
-		draw_attr_ring(sr, sc, radius, EXIT_ATTR);
+		draw_attr_ring(sr, sc, radius, EXIT_LOCKED_ATTR);
 		for (f = 0; f != 2; ++f) intrinsic_halt();
 		restore_attr_ring(sr, sc, radius);
 	}
 
-	set_attr(sr, sc, EXIT_ATTR);
+	set_attr(sr, sc, EXIT_LOCKED_ATTR);
 	draw_exit(exit_gx, exit_gy);
 	sp1_UpdateNow();
 
@@ -1584,6 +1707,9 @@ main()
 	sp1_TileEntry('F', floor_tile);
 	sp1_TileEntry('G', spr_gun);
 
+	/* Set print attributes to white ink on black paper globally */
+	set_print_attr(INK_WHITE | PAPER_BLACK);
+
 	/* Create SP1 sprites for pixel scrolling.
 	   Moving sprites: 2-column MASK2NR, height=2, with pre-shifted frames.
 	   Col 0 = shifted graphic, col 1 = horizontal overflow (offset 46).
@@ -1728,10 +1854,11 @@ main()
 		{
 			static unsigned char len;
 			static char *dname;
+			set_print_attr(INK_WHITE | PAPER_BLACK);
 			dname = (difficulty == 1) ? "Easy" :
 			        (difficulty == 2) ? "Normal" :
 			        (difficulty == 3) ? "Hard" : "Nightmare";
-			len = sprintf(txt_buffer, "Lv%d [%s]  O/P/Q/A", level, dname);
+			len = sprintf(txt_buffer, "Lv%d [%s]  O/P/Q/A/SPC", level, dname);
 			gotoxy(center_x(len), 23); printf(txt_buffer);
 		}
 
@@ -1770,6 +1897,11 @@ main()
 
 		/* Place coins, gun, and draw everything */
 		place_coins();
+		coins_collected = 0;
+		total_coins = coins_left;
+		coins_needed = (total_coins + 1) / 2;  /* need half the coins */
+		exit_open = 0;
+		sp1_set_spr_colour(spr_exit_s, EXIT_LOCKED_ATTR);
 		place_gun();
 		draw_exit(exit_gx, exit_gy);
 		{
@@ -1781,8 +1913,8 @@ main()
 		sp1_UpdateNow();
 
 		show_score();
-		show_timer();
-		show_gun_hud();
+		set_row_attr(23, INK_WHITE | PAPER_BLACK);
+		fix_row0_attrs();
 		level_intro();
 
 		while (1) {
@@ -1859,7 +1991,6 @@ main()
 						zx_border(INK_YELLOW);
 						snd_coin();
 						zx_border(INK_BLACK);
-						show_score();
 					}
 
 					/* Pick up gun? */
@@ -1899,7 +2030,7 @@ main()
 						}
 					}
 
-					if (px == exit_gx && py == exit_gy) {
+					if (exit_open && px == exit_gx && py == exit_gy) {
 						score += 50 + timer_sec;
 						render_spr_pix(spr_player, framebuf_player,
 						               gfx_player, ppx, ppy);
@@ -1981,10 +2112,32 @@ main()
 					               framebuf_enemies[ei],
 					               gfx_enemy, epx[ei], epy[ei]);
 				}
+
+				/* Coins impossible? Game over if can't reach threshold */
+				if (!exit_open &&
+				    coins_collected + coins_left < coins_needed) {
+					sp1_UpdateNow();
+					coins_lost_cut_scene();
+					wait_any_key();
+					rank = update_hiscores();
+					show_hiscores(rank);
+					score = 0;
+					level = 0;
+					game_over = 1;
+					break;
+				}
 			}
 
+			/* Update coins HUD in SP1 buffer before render */
 			/* --- Render all SP1 changes this frame --- */
 			sp1_UpdateNow();
+
+			/* Update HUD after render (row 0/22 outside maze area) */
+			if (hud_dirty) {
+				hud_dirty = 0;
+				show_score();
+				show_coins_hud();
+			}
 
 			/* --- Timer countdown --- */
 			timer_frac--;

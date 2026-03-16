@@ -63,8 +63,8 @@ Build/run cycle:
 - web emul
 - bug: sometimes player walks through enemy, still
 + add tolerance on entering corridors
-- don't place enemies in possitions that don't allow me to pass them (not corner me)
-- don't open exit until min coins collected?
+- don't place enemies in positions that don't allow me to pass them (not corner me)
++ don't open exit until min coins collected?
 - ay effects/music
 - demo mode
 + ability to collect "shot" and shoot 1 enemy
