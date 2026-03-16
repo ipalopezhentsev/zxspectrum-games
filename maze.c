@@ -1158,6 +1158,186 @@ void time_up_cut_scene()
 	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
 }
 
+/* Return the correct maze attribute for screen cell (r, c).
+   Used by restore_attr_ring to repair cells after the zoom effect. */
+unsigned char maze_attr_at(unsigned char r, unsigned char c)
+{
+	static unsigned char gy, gx;
+	if (r < MAZE_R0 || r >= MAZE_R0 + EROWS) return INK_WHITE | PAPER_BLACK;
+	if (c < MAZE_C0 || c >= MAZE_C0 + ECOLS)  return INK_WHITE | PAPER_BLACK;
+	gy = r - MAZE_R0;
+	gx = c - MAZE_C0;
+	if (wallmap[(unsigned int)gy * ECOLS + gx]) return WALL_ATTR;
+	/* Entity positions — checked before coins so sprites stay coloured */
+	if (gx == exit_gx && gy == exit_gy) return EXIT_ATTR;
+	if (gx == px && gy == py) return PLAYER_ATTR;
+	{
+		static unsigned char ei;
+		for (ei = 0; ei != num_enemies; ++ei)
+			if (gx == enx[ei] && gy == eny[ei])
+				return (ei == 0) ? ENEMY_ATTR  : (ei == 1) ? ENEMY2_ATTR :
+				       (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+	}
+	/* Coin cells sit at odd expanded-grid positions (maze cell centres) */
+	if ((gx & 1) && (gy & 1) && coinmap[(unsigned int)(gy >> 1) * COLS + (gx >> 1)])
+		return COIN_ATTR;
+	return CORR_ATTR;
+}
+
+/* Paint the outline (border only) of a rectangle centred on (sr,sc)
+   with the given attribute.  Radius is half-size in character cells. */
+void draw_attr_ring(unsigned char sr, unsigned char sc,
+                    unsigned char radius, unsigned char attr)
+{
+	static int r, c, r1, c1, r2, c2;
+	r1 = (int)sr - radius;  r2 = (int)sr + radius;
+	c1 = (int)sc - radius;  c2 = (int)sc + radius;
+	if (r1 < 0)  r1 = 0;   if (r2 > 23) r2 = 23;
+	if (c1 < 0)  c1 = 0;   if (c2 > 31) c2 = 31;
+	for (c = c1; c <= c2; ++c) {
+		set_attr(r1, c, attr);
+		if (r2 != r1) set_attr(r2, c, attr);
+	}
+	for (r = r1 + 1; r < r2; ++r) {
+		set_attr(r, c1, attr);
+		if (c2 != c1) set_attr(r, c2, attr);
+	}
+}
+
+/* Restore the outline painted by draw_attr_ring back to maze colours. */
+void restore_attr_ring(unsigned char sr, unsigned char sc, unsigned char radius)
+{
+	static int r, c, r1, c1, r2, c2;
+	r1 = (int)sr - radius;  r2 = (int)sr + radius;
+	c1 = (int)sc - radius;  c2 = (int)sc + radius;
+	if (r1 < 0)  r1 = 0;   if (r2 > 23) r2 = 23;
+	if (c1 < 0)  c1 = 0;   if (c2 > 31) c2 = 31;
+	for (c = c1; c <= c2; ++c) {
+		set_attr(r1, c, maze_attr_at(r1, c));
+		if (r2 != r1) set_attr(r2, c, maze_attr_at(r2, c));
+	}
+	for (r = r1 + 1; r < r2; ++r) {
+		set_attr(r, c1, maze_attr_at(r, c1));
+		if (c2 != c1) set_attr(r, c2, maze_attr_at(r, c2));
+	}
+}
+
+/* Level introduction:
+   1. Enemies revealed one at a time with a shrinking-rectangle zoom effect
+      and a fat bass thump for each.
+   2. Exit revealed with a chime.
+   3. Enemies revealed one at a time with a fat bass thump.
+   4. Player revealed with an ascending fanfare.
+   5. READY-STEADY-GO before control is handed to the player. */
+void level_intro()
+{
+	static unsigned char ei, sr, sc, radius, ea;
+	static int f;
+	static unsigned char len, c;
+
+	/* Hide all moving sprites — revealed one by one below */
+	sp1_MoveSprAbs(spr_player, &maze_clip, 0, 25, 0, 0, 0);
+	sp1_MoveSprAbs(spr_exit_s, &maze_clip, 0, 25, 0, 0, 0);
+	for (ei = 0; ei != 4; ++ei)
+		sp1_MoveSprAbs(spr_enemies[ei], &maze_clip, 0, 25, 0, 0, 0);
+	sp1_UpdateNow();
+
+	/* ── Present the exit ── */
+	sr = MAZE_R0 + exit_gy;
+	sc = MAZE_C0 + exit_gx;
+
+	/* Chime: three rising notes */
+	bit_beep(6, 400); intrinsic_ei();
+	bit_beep(6, 280); intrinsic_ei();
+	bit_beep(10, 180); intrinsic_ei();
+
+	for (radius = 7; radius != 0; --radius) {
+		draw_attr_ring(sr, sc, radius, EXIT_ATTR);
+		for (f = 0; f != 2; ++f) intrinsic_halt();
+		restore_attr_ring(sr, sc, radius);
+	}
+
+	set_attr(sr, sc, EXIT_ATTR);
+	draw_exit(exit_gx, exit_gy);
+	sp1_UpdateNow();
+
+	for (f = 0; f != 20; ++f) intrinsic_halt();
+
+	/* ── Present each enemy ── */
+	for (ei = 0; ei != num_enemies; ++ei) {
+		sr = MAZE_R0 + eny[ei];
+		sc = MAZE_C0 + enx[ei];
+		ea = (ei == 0) ? ENEMY_ATTR  : (ei == 1) ? ENEMY2_ATTR :
+		     (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+
+		/* Fat bass thump */
+		bit_beep(30, 1500); intrinsic_ei();
+		bit_beep(12, 900);  intrinsic_ei();
+
+		/* Zoom-in: large ring shrinks down to the entity cell */
+		for (radius = 7; radius != 0; --radius) {
+			draw_attr_ring(sr, sc, radius, ea);
+			for (f = 0; f != 2; ++f) intrinsic_halt();
+			restore_attr_ring(sr, sc, radius);
+		}
+
+		/* Flash the entity cell then reveal the sprite */
+		set_attr(sr, sc, ea);
+		draw_enemy_n(ei, enx[ei], eny[ei]);
+		sp1_UpdateNow();
+
+		for (f = 0; f != 20; ++f) intrinsic_halt();
+	}
+
+	/* ── Present the player ── */
+	sr = MAZE_R0 + py;
+	sc = MAZE_C0 + px;
+
+	/* Ascending three-note fanfare */
+	bit_beep(8, 500); intrinsic_ei();
+	bit_beep(8, 350); intrinsic_ei();
+	bit_beep(12, 200); intrinsic_ei();
+
+	for (radius = 7; radius != 0; --radius) {
+		draw_attr_ring(sr, sc, radius, PLAYER_ATTR);
+		for (f = 0; f != 2; ++f) intrinsic_halt();
+		restore_attr_ring(sr, sc, radius);
+	}
+
+	set_attr(sr, sc, PLAYER_ATTR);
+	draw_dot(px, py);
+	sp1_UpdateNow();
+
+	for (f = 0; f != 25; ++f) intrinsic_halt();
+
+	/* ── Countdown READY-STEADY-GO ── */
+	len = sprintf(txt_buffer, "  READY  ");
+	gotoxy(center_x(len), 21); printf(txt_buffer);
+	zx_border(INK_RED);
+	bit_beep(4, 400); intrinsic_ei();
+	for (f = 0; f != 30; ++f) intrinsic_halt();
+
+	len = sprintf(txt_buffer, " STEADY  ");
+	gotoxy(center_x(len), 21); printf(txt_buffer);
+	zx_border(INK_YELLOW);
+	bit_beep(4, 300); intrinsic_ei();
+	for (f = 0; f != 30; ++f) intrinsic_halt();
+
+	len = sprintf(txt_buffer, "** GO! **");
+	gotoxy(center_x(len), 21); printf(txt_buffer);
+	zx_border(INK_GREEN);
+	bit_beep(6, 150); intrinsic_ei();
+	bit_beep(6, 100); intrinsic_ei();
+	for (f = 0; f != 15; ++f) intrinsic_halt();
+
+	/* Clear countdown row and restore its attributes */
+	gotoxy(0, 21);
+	printf("                                                                ");
+	for (c = 0; c != 32; ++c)
+		set_attr(21, c, INK_WHITE | PAPER_BLACK);
+	zx_border(INK_BLACK);
+}
+
 /* Frame-based timing (1 frame = 20ms at 50Hz) */
 #define KEY_REPEAT    4   /* held key repeats every 4 frames = 80ms */
 
@@ -1413,6 +1593,7 @@ main()
 
 		show_score();
 		show_timer();
+		level_intro();
 
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame (IM2 null ISR — safe) */
