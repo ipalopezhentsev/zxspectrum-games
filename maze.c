@@ -79,6 +79,14 @@ unsigned char extra_halls_base; /* base number of extra halls */
 unsigned char extra_halls_rng;  /* random additional halls */
 unsigned char time_limit;       /* seconds per level for this difficulty */
 
+/* Gun pickup state */
+unsigned char gun_gx, gun_gy;  /* gun position in expanded grid */
+unsigned char has_gun;          /* 1 = player carrying the gun */
+unsigned char gun_placed;       /* 1 = gun exists on the map */
+unsigned char enemy_stun[4];    /* stun timer in seconds, 0 = active */
+
+#define STUN_SECS 8
+
 /* High scores table */
 uint hiscores[NUM_HISCORES];
 unsigned char hilevel[NUM_HISCORES];
@@ -152,6 +160,8 @@ unsigned int bfs_adj_ptr_g;
 #define HISCORE_ATTR (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TIMER_ATTR   (BRIGHT | INK_WHITE | PAPER_BLACK)
 #define TIMER_WARN_ATTR (BRIGHT | INK_RED | PAPER_BLACK)
+#define GUN_ATTR    (BRIGHT | INK_CYAN | PAPER_BLACK)
+#define SHOT_ATTR   (BRIGHT | INK_CYAN | PAPER_CYAN)
 
 /* Exit position in expanded grid (randomized each level) */
 unsigned char exit_gx, exit_gy;
@@ -199,6 +209,18 @@ const unsigned char spr_coin[8] = {
 	0b00111100,
 	0b00111100,
 	0b00011000,
+	0b00000000
+};
+
+/* Gun pickup: arrow/blaster shape */
+const unsigned char spr_gun[8] = {
+	0b00000000,
+	0b00011110,
+	0b00111111,
+	0b01111100,
+	0b01111100,
+	0b00111111,
+	0b00011110,
 	0b00000000
 };
 
@@ -411,6 +433,7 @@ void add_extra_passages()
 }
 
 unsigned char center_x(uchar text_len) __z88dk_fastcall;
+unsigned char maze_attr_at(unsigned char r, unsigned char c);
 
 void draw_maze()
 {
@@ -515,6 +538,30 @@ void snd_win()
 	intrinsic_ei();
 }
 
+void snd_gun_pickup()
+{
+	bit_beep(1, 150);
+	bit_beep(1, 100);
+	bit_beep(1, 50);
+	intrinsic_ei();
+}
+
+void snd_shot()
+{
+	bit_beep(1, 30);
+	bit_beep(1, 60);
+	bit_beep(1, 90);
+	intrinsic_ei();
+}
+
+void snd_shot_hit()
+{
+	bit_beep(10, 100);
+	intrinsic_ei();
+	bit_beep(10, 60);
+	intrinsic_ei();
+}
+
 /* Wait for all keys released, then wait for any key press. */
 void wait_any_key()
 {
@@ -584,6 +631,35 @@ void place_coins()
 	}
 }
 
+/* Place a gun pickup at a random corridor cell */
+void place_gun()
+{
+	static unsigned char cx, cy, gx, gy, attempts, ei, skip;
+	gun_placed = 0;
+	has_gun = 0;
+	attempts = 50;
+	while (attempts > 0) {
+		attempts--;
+		cx = rand() % COLS;
+		cy = rand() % ROWS;
+		gx = (cx << 1) + 1;
+		gy = (cy << 1) + 1;
+		if (gx == px && gy == py) continue;
+		if (gx == exit_gx && gy == exit_gy) continue;
+		skip = 0;
+		for (ei = 0; ei != num_enemies; ++ei)
+			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
+		if (skip) continue;
+		/* Avoid placing on a coin */
+		if (coinmap[cy * COLS + cx]) continue;
+		gun_gx = gx;
+		gun_gy = gy;
+		gun_placed = 1;
+		sp1_PrintAtInv(SROW(gy), SCOL(gx), GUN_ATTR, 'G');
+		return;
+	}
+}
+
 /* Check and collect coin at expanded grid position (gx,gy) */
 unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 {
@@ -628,6 +704,92 @@ void show_timer()
 		for (c = 12; c != 20; ++c)
 			set_attr(0, c, attr);
 	}
+}
+
+/* Show/hide GUN indicator on HUD */
+void show_gun_hud()
+{
+	static unsigned char c;
+	if (has_gun) {
+		gotoxy(0, 0);
+		printf("GUN");
+		for (c = 0; c != 2; ++c)
+			set_attr(0, c, GUN_ATTR);
+	} else {
+		gotoxy(0, 0);
+		printf("   ");
+		for (c = 0; c != 2; ++c)
+			set_attr(0, c, INK_WHITE | PAPER_BLACK);
+	}
+}
+
+/* Fire a shot in direction pdir. Traces through corridor cells,
+   flashes them, kills first enemy hit. Consumes the gun. */
+void fire_shot()
+{
+	static int gx, gy;
+	static char ddx, ddy;
+	static unsigned char hit_enemy, path_len, i;
+
+	has_gun = 0;
+	hit_enemy = 255;
+	path_len = 0;
+
+	if (pdir == 0) { ddx = -1; ddy = 0; }
+	else if (pdir == 1) { ddx = 1; ddy = 0; }
+	else if (pdir == 2) { ddx = 0; ddy = -1; }
+	else { ddx = 0; ddy = 1; }
+
+	/* Trace path, flash attrs, find enemy */
+	gx = px; gy = py;
+	while (path_len < 29) {
+		gx += ddx; gy += ddy;
+		if (gx < 0 || gx >= ECOLS || gy < 0 || gy >= EROWS) break;
+		if (wallmap[erow_x_ecols[gy] + gx]) break;
+		path_len++;
+		set_attr(SROW(gy), SCOL(gx), SHOT_ATTR);
+		/* Check for live enemy */
+		{
+			unsigned char ei;
+			for (ei = 0; ei != num_enemies; ++ei) {
+				if (!enemy_stun[ei] &&
+				    enx[ei] == (unsigned char)gx &&
+				    eny[ei] == (unsigned char)gy) {
+					hit_enemy = ei;
+				}
+			}
+		}
+		if (hit_enemy != 255) break;
+	}
+
+	if (path_len == 0) {
+		/* Facing a wall — shot wasted with a dud sound */
+		bit_beep(1, 800); intrinsic_ei();
+		show_gun_hud();
+		return;
+	}
+
+	/* Zap sound */
+	snd_shot();
+
+	/* Pause to show the shot line */
+	for (i = 0; i != 6; ++i) intrinsic_halt();
+
+	/* Restore attrs along the same path */
+	gx = px; gy = py;
+	for (i = 0; i != path_len; ++i) {
+		gx += ddx; gy += ddy;
+		set_attr(SROW(gy), SCOL(gx),
+		         maze_attr_at(SROW(gy), SCOL(gx)));
+	}
+
+	/* Stun enemy if hit */
+	if (hit_enemy != 255) {
+		enemy_stun[hit_enemy] = STUN_SECS;
+		snd_shot_hit();
+	}
+
+	show_gun_hud();
 }
 
 /* Update high scores table, return rank (0-based) or -1 */
@@ -1178,6 +1340,8 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 				return (ei == 0) ? ENEMY_ATTR  : (ei == 1) ? ENEMY2_ATTR :
 				       (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
 	}
+	/* Gun pickup */
+	if (gun_placed && gx == gun_gx && gy == gun_gy) return GUN_ATTR;
 	/* Coin cells sit at odd expanded-grid positions (maze cell centres) */
 	if ((gx & 1) && (gy & 1) && coinmap[(unsigned int)(gy >> 1) * COLS + (gx >> 1)])
 		return COIN_ATTR;
@@ -1310,6 +1474,27 @@ void level_intro()
 
 	for (f = 0; f != 25; ++f) intrinsic_halt();
 
+	/* ── Present the gun ── */
+	if (gun_placed) {
+		sr = MAZE_R0 + gun_gy;
+		sc = MAZE_C0 + gun_gx;
+
+		/* Pickup chime: two quick high notes */
+		bit_beep(4, 200); intrinsic_ei();
+		bit_beep(6, 120); intrinsic_ei();
+
+		for (radius = 7; radius != 0; --radius) {
+			draw_attr_ring(sr, sc, radius, GUN_ATTR);
+			for (f = 0; f != 2; ++f) intrinsic_halt();
+			restore_attr_ring(sr, sc, radius);
+		}
+
+		set_attr(sr, sc, GUN_ATTR);
+		sp1_UpdateNow();
+
+		for (f = 0; f != 20; ++f) intrinsic_halt();
+	}
+
 	/* ── Countdown READY-STEADY-GO ── */
 	len = sprintf(txt_buffer, "  READY  ");
 	gotoxy(center_x(len), 21); printf(txt_buffer);
@@ -1397,6 +1582,7 @@ main()
 	sp1_TileEntry('B', brick);
 	sp1_TileEntry('C', spr_coin);
 	sp1_TileEntry('F', floor_tile);
+	sp1_TileEntry('G', spr_gun);
 
 	/* Create SP1 sprites for pixel scrolling.
 	   Moving sprites: 2-column MASK2NR, height=2, with pre-shifted frames.
@@ -1442,7 +1628,7 @@ main()
 	udk.right = in_LookupKey('p');
 	udk.up    = in_LookupKey('q');
 	udk.down  = in_LookupKey('a');
-	udk.fire  = 0;
+	udk.fire  = in_LookupKey(' ');
 
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
@@ -1572,16 +1758,19 @@ main()
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		panim = 0;
+		pdir = 1;  /* default facing right */
 		{
 			unsigned char ei;
 			for (ei = 0; ei != num_enemies; ++ei) {
 				last_edir_arr[ei] = 0;
 				eanim[ei] = 0;
+				enemy_stun[ei] = 0;
 			}
 		}
 
-		/* Place coins and draw everything */
+		/* Place coins, gun, and draw everything */
 		place_coins();
+		place_gun();
 		draw_exit(exit_gx, exit_gy);
 		{
 			static unsigned char ei;
@@ -1593,6 +1782,7 @@ main()
 
 		show_score();
 		show_timer();
+		show_gun_hud();
 		level_intro();
 
 		while (1) {
@@ -1624,11 +1814,24 @@ main()
 						show_score();
 					}
 
+					/* Pick up gun? */
+					if (gun_placed && px == gun_gx && py == gun_gy) {
+						gun_placed = 0;
+						has_gun = 1;
+						sp1_PrintAtInv(SROW(gun_gy), SCOL(gun_gx),
+						               CORR_ATTR, 'F');
+						zx_border(INK_CYAN);
+						snd_gun_pickup();
+						zx_border(INK_BLACK);
+						show_gun_hud();
+					}
+
 					/* Player walked onto enemy? */
 					{
 						unsigned char ei;
 						unsigned char dest_x, dest_y;
 						for (ei = 0; ei != num_enemies; ++ei) {
+							if (enemy_stun[ei]) continue;
 							if (eanim[ei] == 0) {
 								/* Enemy stationary -- direct check */
 								if (px == enx[ei] && py == eny[ei])
@@ -1664,6 +1867,10 @@ main()
 				/* Accept new input */
 				dx = 0; dy = 0;
 				k = in_JoyKeyboard(&udk);
+				/* Fire gun: space bar, takes priority over movement */
+				if (has_gun && (k & in_FIRE)) {
+					fire_shot();
+				} else {
 				if (k) {
 					if (k & in_LEFT)  dx = -1;
 					if (k & in_RIGHT) dx = 1;
@@ -1687,6 +1894,7 @@ main()
 				} else if (dx || dy) {
 					snd_bump();
 				}
+				} /* end else (not firing) */
 			}
 
 			/* Render player at current pixel position */
@@ -1704,7 +1912,7 @@ main()
 					enemy_accum -= enemy_frames;
 					if (eanim[enemy_next] == 0) {
 						edir = decide_enemy_dir(enemy_next);
-						if (edir >= 0)
+						if (edir >= 0 && !enemy_stun[enemy_next])
 							start_enemy_move(enemy_next, edir);
 					}
 					enemy_next++;
@@ -1714,7 +1922,7 @@ main()
 
 				/* Advance all enemy animations and render */
 				for (ei = 0; ei != num_enemies; ++ei) {
-					if (eanim[ei] > 0) {
+					if (!enemy_stun[ei] && eanim[ei] > 0) {
 						advance_enemy_anim(ei);
 						/* Check collision when animation completes */
 						if (eanim[ei] == 0 &&
@@ -1734,6 +1942,12 @@ main()
 			timer_frac--;
 			if (timer_frac == 0) {
 				timer_frac = 50;
+				/* Decrement stun timers once per second */
+				{
+					unsigned char ei;
+					for (ei = 0; ei != num_enemies; ++ei)
+						if (enemy_stun[ei] > 0) enemy_stun[ei]--;
+				}
 				if (timer_sec > 0) {
 					timer_sec--;
 			
