@@ -1446,9 +1446,25 @@ main()
 					/* Player walked onto enemy? */
 					{
 						unsigned char ei;
-						for (ei = 0; ei != num_enemies; ++ei)
-							if (px == enx[ei] && py == eny[ei])
-								caught = 1;
+						unsigned char dest_x, dest_y;
+						for (ei = 0; ei != num_enemies; ++ei) {
+							if (eanim[ei] == 0) {
+								/* Enemy stationary -- direct check */
+								if (px == enx[ei] && py == eny[ei])
+									caught = 1;
+							} else {
+								/* Enemy mid-animation: enx/eny is the departure
+								   cell (not yet updated). Check destination. */
+								dest_x = enx[ei];
+								dest_y = eny[ei];
+								if (edir_anim[ei] == 0) dest_x--;
+								else if (edir_anim[ei] == 1) dest_x++;
+								else if (edir_anim[ei] == 2) dest_y--;
+								else dest_y++;
+								if (px == dest_x && py == dest_y)
+									caught = 1;
+							}
+						}
 					}
 
 					if (px == exit_gx && py == exit_gy) {
