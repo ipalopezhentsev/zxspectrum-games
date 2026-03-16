@@ -67,10 +67,12 @@ Build/run cycle:
 - don't open exit until min coins collected?
 - introduce delay for studying level - can start with zoom on player then places enemies one by one with stumping sound
 - ay effects/music
+- demo mode
+- ability to collect "shot" and shoot 1 enemy
 + prefer unsigned to signed and char to int
 + follow all advice from https://github.com/z88dk/z88dk/wiki/WritingOptimalCode
-- pixel scrolling (with masks?! - if we add background to maze)
-- some background in corridors?
++ pixel scrolling (with masks?! - if we add background to maze)
++ some background in corridors?
 - player figure -> man with several movement phases
 + use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
 +// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS

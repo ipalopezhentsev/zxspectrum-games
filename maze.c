@@ -10,6 +10,7 @@
 #include <arch/zx/sprites/sp1.h>
 #include <malloc.h>
 
+#pragma output CRT_ORG_CODE = 0x6000
 #pragma output STACKPTR=0xD000
 
 #define TEXT_SCR_WIDTH 64
@@ -41,6 +42,25 @@ unsigned char enx[4], eny[4];    /* enemy positions in expanded grid */
 unsigned char last_edir_arr[4];  /* last direction each enemy moved */
 unsigned char enemy_next;        /* round-robin: which enemy moves next */
 unsigned char enemy_accum;       /* Bresenham accumulator for spreading */
+
+/* Pixel positions for smooth scrolling (pixel = grid_pos * 8) */
+unsigned char ppx, ppy;         /* player pixel position in maze area */
+unsigned char epx[4], epy[4];   /* enemy pixel positions */
+
+/* Animation state: 0=at grid boundary, >0=frames remaining */
+unsigned char panim;
+unsigned char pdir;              /* player animation direction (0-3) */
+unsigned char eanim[4];          /* enemy animation counters */
+unsigned char edir_anim[4];     /* enemy animation directions */
+
+#define MOVE_SPEED 2
+#define ANIM_FRAMES 4
+
+/* Frame buffers for pre-shifted 2-column sprites.
+   Layout per buffer: 46 bytes col0 + 46 bytes col1 = 92 bytes.
+   Each column: 8 transparent + 8 content + 7 padding = 23 lines × 2 bytes. */
+unsigned char framebuf_player[92];
+unsigned char framebuf_enemies[4][92];
 unsigned int rseed;
 /* User-defined keys for in_JoyKeyboard() — OPQA directions */
 struct in_UDK udk;
@@ -83,8 +103,8 @@ struct sp1_ss *spr_player;
 struct sp1_ss *spr_enemies[4];
 struct sp1_ss *spr_exit_s;
 
-/* SP1 clipping rect for maze area */
-struct sp1_Rect maze_clip = {MAZE_R0, MAZE_C0, ECOLS, EROWS};
+/* SP1 clipping rect for maze area — expanded for pixel scrolling overflow */
+struct sp1_Rect maze_clip = {MAZE_R0 - 1, MAZE_C0, ECOLS + 1, EROWS + 2};
 struct sp1_Rect full_screen = {0, 0, 32, 24};
 
 /* SP1 colour callback globals */
@@ -161,25 +181,6 @@ const unsigned char brick[8] = {
 	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00, \
 	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00
 
-unsigned char sp1_dot_data[] = {
-	SP1_TRANSPARENT_ROW,   /* top overflow */
-	0x00,0x00, 0x00,0x00,
-	0x00,0x38, 0x00,0x7C,
-	0x00,0x7C, 0x00,0x7C,
-	0x00,0x38, 0x00,0x00,
-	SP1_TRANSPARENT_ROW    /* bottom overflow */
-};
-unsigned char *sp1_dot_gfx = &sp1_dot_data[16];
-
-unsigned char sp1_enemy_data[] = {
-	SP1_TRANSPARENT_ROW,
-	0x00,0x00, 0x00,0x00,
-	0x00,0x10, 0x00,0x28,
-	0x00,0x54, 0x00,0x28,
-	0x00,0x10, 0x00,0x00,
-	SP1_TRANSPARENT_ROW
-};
-unsigned char *sp1_enemy_gfx = &sp1_enemy_data[16];
 
 unsigned char sp1_exit_data[] = {
 	SP1_TRANSPARENT_ROW,
@@ -213,6 +214,10 @@ const unsigned char floor_tile[8] = {
 	0b00000000
 };
 
+/* Raw 8-byte graphics for frame generation (pixel scrolling) */
+const unsigned char gfx_player[8] = {0x00, 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0x00};
+const unsigned char gfx_enemy[8]  = {0x00, 0x10, 0x28, 0x54, 0x28, 0x10, 0x00, 0x00};
+
 
 /* Set attribute for character cell (row, col).
    Used for text rows outside SP1-managed area. */
@@ -228,6 +233,75 @@ void sp1_set_spr_colour(struct sp1_ss *s, unsigned char attr)
 	sp1_cmask = 0x00;
 	sp1_colour = attr;
 	sp1_IterateSprChar(s, colourSpr);
+}
+
+/* Generate pre-shifted frame buffer for a 2-column MASK2NR sprite.
+   buf: 92-byte output buffer (46 col0 + 46 col1).
+   gfx: 8-byte source graphic.
+   h: horizontal shift amount (0-7).
+   cell_aligned: 1 = content first (for vrot=0), 0 = transparent first (for vrot>0).
+   Mask = ~graphic for transparent sprite edges. */
+void gen_frame(unsigned char *buf, const unsigned char *gfx,
+               unsigned char h, unsigned char cell_aligned)
+{
+	static unsigned char i, g, g0, g1, shl;
+	static unsigned char *p;
+
+	p = buf;
+	shl = 8 - h;
+
+	/* Column 0 */
+	if (!cell_aligned)
+		for (i = 0; i != 8; ++i) { *p++ = 0xFF; *p++ = 0x00; }
+	for (i = 0; i != 8; ++i) {
+		g = gfx[i];
+		g0 = g >> h;
+		*p++ = ~g0;
+		*p++ = g0;
+	}
+	for (i = 0; i != (cell_aligned ? 15 : 7); ++i) { *p++ = 0xFF; *p++ = 0x00; }
+
+	/* Column 1 */
+	if (!cell_aligned)
+		for (i = 0; i != 8; ++i) { *p++ = 0xFF; *p++ = 0x00; }
+	for (i = 0; i != 8; ++i) {
+		g = gfx[i];
+		g1 = (g << shl) & 0xFF;
+		*p++ = ~g1;
+		*p++ = g1;
+	}
+	for (i = 0; i != (cell_aligned ? 15 : 7); ++i) { *p++ = 0xFF; *p++ = 0x00; }
+}
+
+/* Render a pixel-scrolled sprite at pixel position (pixel_x, pixel_y)
+   relative to the maze origin. Uses vrot for vertical sub-cell offset
+   and pre-shifted frames for horizontal. */
+void render_spr_pix(struct sp1_ss *s, unsigned char *buf,
+                    const unsigned char *gfx,
+                    unsigned char pixel_x, unsigned char pixel_y)
+{
+	static unsigned char h, d, v;
+	static int R;
+
+	h = pixel_x & 7;
+	d = pixel_y & 7;
+
+	if (d == 0) {
+		gen_frame(buf, gfx, h, 1);  /* content first */
+		R = pixel_y >> 3;
+		v = 0;
+		sp1_MoveSprAbs(s, &maze_clip, buf,
+			MAZE_R0 + R, MAZE_C0 + (pixel_x >> 3), v, h);
+	} else {
+		gen_frame(buf, gfx, h, 0);  /* transparent first */
+		R = pixel_y >> 3;
+		v = d;
+		/* frame pointer at buf+16 (content start) so SP1's
+		   backward read (frame - 2*vrot) lands in the
+		   transparent padding at buf[0..15] */
+		sp1_MoveSprAbs(s, &maze_clip, buf + 16,
+			MAZE_R0 + R, MAZE_C0 + (pixel_x >> 3), v, h);
+	}
 }
 
 /* Hide all SP1 sprites (move off-screen) */
@@ -392,7 +466,9 @@ void draw_maze()
 
 void draw_dot(unsigned char gx, unsigned char gy)
 {
-	sp1_MoveSprAbs(spr_player, &maze_clip, sp1_dot_gfx, SROW(gy), SCOL(gx), 0, 0);
+	ppx = gx * 8;
+	ppy = gy * 8;
+	render_spr_pix(spr_player, framebuf_player, gfx_player, ppx, ppy);
 }
 
 void draw_exit(unsigned char gx, unsigned char gy)
@@ -454,7 +530,12 @@ void wait_key_release()
 
 void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
 {
-	sp1_MoveSprAbs(spr_enemies[n], &maze_clip, sp1_enemy_gfx, SROW(gy), SCOL(gx), 0, 0);
+	static unsigned char sn;
+	sn = n;
+	epx[sn] = gx * 8;
+	epy[sn] = gy * 8;
+	render_spr_pix(spr_enemies[sn], framebuf_enemies[sn], gfx_enemy,
+	               epx[sn], epy[sn]);
 }
 
 void draw_coin(unsigned char cx, unsigned char cy)
@@ -876,15 +957,13 @@ char enemy_manhattan(unsigned char exx, unsigned char eyy)
 	return -1;  /* both axes blocked — need BFS */
 }
 
-/* Move enemy n one step.
-   At odd position (maze cell): use cached BFS, recalc, or random.
-   At even position (corridor): continue in same direction.
-   SP1 handles background restoration and sprite compositing. */
-void move_enemy(uchar n) __z88dk_fastcall
+/* Decide direction for enemy n. Does NOT move the enemy.
+   Returns 0=left,1=right,2=up,3=down, -1=no valid direction. */
+char decide_enemy_dir(uchar n) __z88dk_fastcall
 {
 	static char dir;
 	static uchar old_ex, old_ey;
-	static uchar sn;   /* copy n to static — sccz80 corrupts uchar params across calls */
+	static uchar sn;
 
 	sn = n;
 	old_ex = enx[sn];
@@ -902,29 +981,64 @@ void move_enemy(uchar n) __z88dk_fastcall
 		/* In corridor between cells — keep going */
 		dir = last_edir_arr[sn];
 	}
-	if (dir < 0) return;
+	return dir;
+}
+
+/* Start enemy n's pixel-scrolling animation in given direction.
+   Sets animation counter and first pixel advance. */
+void start_enemy_move(unsigned char n, char dir)
+{
+	static unsigned char sn;
+	sn = n;
 	last_edir_arr[sn] = dir;
+	edir_anim[sn] = dir;
+	eanim[sn] = ANIM_FRAMES - 1;
 
-	if (dir == 0) enx[sn]--;
-	else if (dir == 1) enx[sn]++;
-	else if (dir == 2) eny[sn]--;
-	else if (dir == 3) eny[sn]++;
+	/* First pixel advance */
+	if (dir == 0) epx[sn] -= MOVE_SPEED;
+	else if (dir == 1) epx[sn] += MOVE_SPEED;
+	else if (dir == 2) epy[sn] -= MOVE_SPEED;
+	else epy[sn] += MOVE_SPEED;
+}
 
-	/* Enemy eats coin if it lands on one */
-	if ((enx[sn] & 1) && (eny[sn] & 1)) {
-		uchar ccx, ccy;
-		ccx = enx[sn] >> 1;
-		ccy = eny[sn] >> 1;
-		if (coinmap[ccy * COLS + ccx]) {
-			coinmap[ccy * COLS + ccx] = 0;
-			coins_left--;
-			/* Remove coin tile */
-			sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, 'F');
+/* Advance enemy n's animation by one frame.
+   When animation completes, updates grid position and checks coins. */
+void advance_enemy_anim(unsigned char n)
+{
+	static unsigned char sn, d;
+	sn = n;
+	d = edir_anim[sn];
+
+	/* Advance pixel position */
+	if (d == 0) epx[sn] -= MOVE_SPEED;
+	else if (d == 1) epx[sn] += MOVE_SPEED;
+	else if (d == 2) epy[sn] -= MOVE_SPEED;
+	else epy[sn] += MOVE_SPEED;
+
+	eanim[sn]--;
+	if (eanim[sn] == 0) {
+		/* Animation complete — update grid position */
+		if (d == 0) enx[sn]--;
+		else if (d == 1) enx[sn]++;
+		else if (d == 2) eny[sn]--;
+		else eny[sn]++;
+
+		/* Snap pixel position */
+		epx[sn] = enx[sn] * 8;
+		epy[sn] = eny[sn] * 8;
+
+		/* Enemy eats coin if it lands on one */
+		if ((enx[sn] & 1) && (eny[sn] & 1)) {
+			unsigned char ccx, ccy;
+			ccx = enx[sn] >> 1;
+			ccy = eny[sn] >> 1;
+			if (coinmap[ccy * COLS + ccx]) {
+				coinmap[ccy * COLS + ccx] = 0;
+				coins_left--;
+				sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, 'F');
+			}
 		}
 	}
-
-	/* Move SP1 sprite to new position */
-	draw_enemy_n(sn, enx[sn], eny[sn]);
 }
 
 /* Pick a random maze cell center in expanded grid, avoiding
@@ -1052,9 +1166,7 @@ main()
 	static char k;
 	static char dx, dy;
 	static unsigned char caught;
-	static unsigned char tick;
 	static char rank;
-	static unsigned char key_delay;
 	static unsigned char game_over;
 
 	/* Initialize high scores */
@@ -1106,15 +1218,18 @@ main()
 	sp1_TileEntry('C', spr_coin);
 	sp1_TileEntry('F', floor_tile);
 
-	/* Create SP1 sprites: single-column NR (non-rotated), height=2, MASK2NR.
-	   Masks are 0x00 (opaque) so sprite fully overwrites background cell.
-	   SP1 restores background tiles when sprite moves away.
-	   xthresh=0 prevents the only column from being suppressed at hrot=0. */
+	/* Create SP1 sprites for pixel scrolling.
+	   Moving sprites: 2-column MASK2NR, height=2, with pre-shifted frames.
+	   Col 0 = shifted graphic, col 1 = horizontal overflow (offset 46).
+	   xthresh=1: col 1 only drawn when hrot>=1 (no overflow at hrot=0).
+	   ythresh=0: always draw row 1 (content lives there at vrot=0). */
 	spr_player = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 0);
-	spr_player->xthresh = 0;
+	sp1_AddColSpr(spr_player, SP1_DRAW_MASK2NR, 0, 46, 0);
+	spr_player->xthresh = 1;
 	spr_player->ythresh = 1;
 	sp1_set_spr_colour(spr_player, PLAYER_ATTR);
 
+	/* Exit sprite: single-column, stays cell-aligned (no pixel scrolling) */
 	spr_exit_s = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 1);
 	spr_exit_s->xthresh = 0;
 	spr_exit_s->ythresh = 1;
@@ -1125,7 +1240,8 @@ main()
 		static unsigned char ea;
 		for (ei = 0; ei != 4; ++ei) {
 			spr_enemies[ei] = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 2);
-			spr_enemies[ei]->xthresh = 0;
+			sp1_AddColSpr(spr_enemies[ei], SP1_DRAW_MASK2NR, 0, 46, 2);
+			spr_enemies[ei]->xthresh = 1;
 			spr_enemies[ei]->ythresh = 1;
 			ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR :
 			     (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
@@ -1271,16 +1387,17 @@ main()
 		if (num_enemies > 3)
 			random_start(&enx[3], &eny[3], px, py, enx[2], eny[2]);
 		caught = 0;
-		tick = 0;
-		key_delay = 0;
 		enemy_next = 0;
 		enemy_accum = 0;
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
+		panim = 0;
 		{
 			unsigned char ei;
-			for (ei = 0; ei != num_enemies; ++ei)
+			for (ei = 0; ei != num_enemies; ++ei) {
 				last_edir_arr[ei] = 0;
+				eanim[ei] = 0;
+			}
 		}
 
 		/* Place coins and draw everything */
@@ -1300,36 +1417,29 @@ main()
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame (IM2 null ISR — safe) */
 
-			/* --- Player input (in_JoyKeyboard scans OPQA) --- */
-			dx = 0;
-			dy = 0;
-			k = in_JoyKeyboard(&udk);
-			if (k) {
-				if (key_delay > 0) {
-					key_delay--;
-				} else {
-					if (k & in_LEFT)  dx = -1;
-					if (k & in_RIGHT) dx = 1;
-					if (k & in_UP)    dy = -1;
-					if (k & in_DOWN)  dy = 1;
-				}
-			} else {
-				key_delay = 0;
-			}
+			/* --- Player pixel-scrolling movement --- */
+			if (panim > 0) {
+				/* Continue animation */
+				if (pdir == 0) ppx -= MOVE_SPEED;
+				else if (pdir == 1) ppx += MOVE_SPEED;
+				else if (pdir == 2) ppy -= MOVE_SPEED;
+				else ppy += MOVE_SPEED;
 
-			if (dx || dy) {
-				key_delay = KEY_REPEAT;
-				if (can_move(dx, dy)) {
-					px += dx;
-					py += dy;
-					draw_dot(px, py);
+				panim--;
+				if (panim == 0) {
+					/* Animation complete — update grid position */
+					if (pdir == 0) px--;
+					else if (pdir == 1) px++;
+					else if (pdir == 2) py--;
+					else py++;
+					ppx = px * 8;
+					ppy = py * 8;
 
 					/* Collect coin? */
 					if (try_collect_coin(px, py)) {
 						zx_border(INK_YELLOW);
 						snd_coin();
 						zx_border(INK_BLACK);
-				
 						show_score();
 					}
 
@@ -1341,29 +1451,83 @@ main()
 								caught = 1;
 					}
 
-					if (px == exit_gx &&
-					    py == exit_gy) {
+					if (px == exit_gx && py == exit_gy) {
 						score += 50 + timer_sec;
+						render_spr_pix(spr_player, framebuf_player,
+						               gfx_player, ppx, ppy);
+						sp1_UpdateNow();
 						win_cut_scene();
 						wait_any_key();
 						break;
 					}
+				}
+			}
+
+			if (panim == 0) {
+				/* Accept new input */
+				dx = 0; dy = 0;
+				k = in_JoyKeyboard(&udk);
+				if (k) {
+					if (k & in_LEFT)  dx = -1;
+					if (k & in_RIGHT) dx = 1;
+					if (k & in_UP)    dy = -1;
+					if (k & in_DOWN)  dy = 1;
+				}
+				/* Only one axis at a time — prevent diagonal wall skip */
+				if (dx && dy) dy = 0;
+				if ((dx || dy) && can_move(dx, dy)) {
+					if (dx == -1) pdir = 0;
+					else if (dx == 1) pdir = 1;
+					else if (dy == -1) pdir = 2;
+					else pdir = 3;
+					panim = ANIM_FRAMES - 1;
+					/* First pixel advance */
+					if (pdir == 0) ppx -= MOVE_SPEED;
+					else if (pdir == 1) ppx += MOVE_SPEED;
+					else if (pdir == 2) ppy -= MOVE_SPEED;
+					else ppy += MOVE_SPEED;
 					snd_step();
-				} else {
+				} else if (dx || dy) {
 					snd_bump();
 				}
 			}
 
-			/* --- Enemy moves spread across frames --- */
-			enemy_accum += num_enemies;
-			while (enemy_accum >= enemy_frames) {
-				enemy_accum -= enemy_frames;
-				move_enemy(enemy_next);
-				if (enx[enemy_next] == px && eny[enemy_next] == py)
-					caught = 1;
-				enemy_next++;
-				if (enemy_next >= num_enemies)
-					enemy_next = 0;
+			/* Render player at current pixel position */
+			render_spr_pix(spr_player, framebuf_player,
+			               gfx_player, ppx, ppy);
+
+			/* --- Enemy moves: decide + animate --- */
+			{
+				static unsigned char ei;
+				static char edir;
+
+				/* Trigger new enemy moves via Bresenham accumulator */
+				enemy_accum += num_enemies;
+				while (enemy_accum >= enemy_frames) {
+					enemy_accum -= enemy_frames;
+					if (eanim[enemy_next] == 0) {
+						edir = decide_enemy_dir(enemy_next);
+						if (edir >= 0)
+							start_enemy_move(enemy_next, edir);
+					}
+					enemy_next++;
+					if (enemy_next >= num_enemies)
+						enemy_next = 0;
+				}
+
+				/* Advance all enemy animations and render */
+				for (ei = 0; ei != num_enemies; ++ei) {
+					if (eanim[ei] > 0) {
+						advance_enemy_anim(ei);
+						/* Check collision when animation completes */
+						if (eanim[ei] == 0 &&
+						    enx[ei] == px && eny[ei] == py)
+							caught = 1;
+					}
+					render_spr_pix(spr_enemies[ei],
+					               framebuf_enemies[ei],
+					               gfx_enemy, epx[ei], epy[ei]);
+				}
 			}
 
 			/* --- Render all SP1 changes this frame --- */
