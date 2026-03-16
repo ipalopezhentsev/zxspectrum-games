@@ -752,19 +752,38 @@ void set_row_attr(unsigned char row, unsigned char attr)
 		set_attr(row, c, attr);
 }
 
-/* Display score on the title row */
-void show_score()
+/* Column positions for HUD elements (64-col text mode) */
+#define SCORE_LABEL_X  25  /* "SCORE: " starts here (row 22) */
+#define SCORE_NUM_X    32  /* 6-digit number starts here */
+#define TIMER_LABEL_X  27  /* "TIME " starts here (row 0) */
+#define TIMER_NUM_X    32  /* "d:dd" starts here */
+#define COINS_LABEL_X  38  /* "COINS TO GO" starts here (row 0) */
+#define COINS_NUM_X    50  /* 2-digit number starts here */
+
+/* Print all static HUD labels — call once at level start */
+void draw_hud_labels()
 {
-	static unsigned char len;
 	set_print_attr(INK_WHITE | PAPER_BLACK);
-	len = sprintf(txt_buffer, "SCORE: %06d", score);
-	gotoxy(center_x(len), 22); printf(txt_buffer);
+	gotoxy(SCORE_LABEL_X, 22); printf("SCORE:");
+
+	set_print_attr(TIMER_ATTR);
+	gotoxy(TIMER_LABEL_X, 0); printf("TIME");
+
+	set_print_attr(INK_WHITE | PAPER_BLACK);
+	gotoxy(COINS_LABEL_X, 0); printf("COINS TO GO");
 }
 
-/* Display remaining time on row 0 */
+/* Update score number only (row 22) */
+void show_score()
+{
+	set_print_attr(INK_WHITE | PAPER_BLACK);
+	sprintf(txt_buffer, "%06d", score);
+	gotoxy(SCORE_NUM_X, 22); printf(txt_buffer);
+}
+
+/* Update time digits only (row 0) — also sets attr for warning */
 void show_timer()
 {
-	static unsigned char len, c;
 	static unsigned char m, s;
 	static unsigned char attr;
 	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
@@ -773,9 +792,14 @@ void show_timer()
 	s = timer_sec;
 	m = 0;
 	while (s >= 60) { s -= 60; m++; }
-	len = sprintf(txt_buffer, "TIME %d:%02d", m, s);
-	gotoxy(center_x(len), 0); printf(txt_buffer);
-	set_print_attr(INK_WHITE | PAPER_BLACK);
+	sprintf(txt_buffer, "%d:%02d", m, s);
+	gotoxy(TIMER_NUM_X, 0); printf(txt_buffer);
+	/* Recolour "TIME" label cells when warning kicks in */
+	if (timer_sec <= 10) {
+		set_attr(0, 13, TIMER_WARN_ATTR);
+		set_attr(0, 14, TIMER_WARN_ATTR);
+		set_attr(0, 15, TIMER_WARN_ATTR);
+	}
 }
 
 /* Show/hide GUN indicator on HUD */
@@ -793,19 +817,17 @@ void show_gun_hud()
 	set_print_attr(INK_WHITE | PAPER_BLACK);
 }
 
-/* Show coins remaining until exit opens, right side of row 0 */
+/* Update coins remaining digits only (row 0) — also restores attr */
 void show_coins_hud()
 {
-	static unsigned char len, attr, remain;
+	static unsigned char attr, remain;
 	remain = (coins_collected >= coins_needed) ? 0 :
 	         coins_needed - coins_collected;
 	attr = exit_open ? (BRIGHT | INK_GREEN | PAPER_BLACK) :
 	                   (INK_RED | PAPER_BLACK);
 	set_print_attr(attr);
-	//sprintf(txt_buffer, "COINS TO OPEN EXIT: %02d", remain);
 	sprintf(txt_buffer, "%02d", remain);
-	gotoxy(42, 0); printf(txt_buffer);
-	set_print_attr(INK_WHITE | PAPER_BLACK);
+	gotoxy(COINS_NUM_X, 0); printf(txt_buffer);
 }
 
 /* Fix all row-0 attrs: clear to black, then reapply coloured sections */
@@ -920,8 +942,7 @@ char update_hiscores()
 /* Display high scores screen */
 void show_hiscores(char rank) __z88dk_fastcall
 {
-	static unsigned char i, r, c;
-	static unsigned char attr;
+	static unsigned char i, r;
 
 	hide_sprites();
 	/* Clear screen via SP1 */
@@ -931,12 +952,25 @@ void show_hiscores(char rank) __z88dk_fastcall
 
 
 	static unsigned char len;
+
+	zx_setink(INK_YELLOW);
+	zx_setpaper(PAPER_BLUE);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
 	len = sprintf(txt_buffer, "-= HIGH SCORES =-");
 	gotoxy(center_x(len), 1);
 	printf(txt_buffer);
 
 	for (i = 0; i != NUM_HISCORES; ++i) {
 		r = 3 + (i << 1);
+		if (i == rank) {
+			zx_setink(INK_GREEN);
+			zx_setpaper(PAPER_BLACK);
+			*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+		} else {
+			zx_setink(INK_YELLOW);
+			zx_setpaper(PAPER_BLACK);
+			*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+		}
 		if (hiscores[i] == 0) {
 			gotoxy(6, r);
 			printf("%d.  ----", i + 1);
@@ -945,16 +979,13 @@ void show_hiscores(char rank) __z88dk_fastcall
 			printf("%d.  %06u  Level %d", i + 1,
 			       hiscores[i], hilevel[i]);
 		}
-		attr = (i == rank) ? (BRIGHT | INK_GREEN | PAPER_BLACK)
-		                    : HISCORE_ATTR;
-		for (c = 4; c != 28; ++c)
-			set_attr(r, c, attr);
 	}
 
+	zx_setink(INK_YELLOW);
+	zx_setpaper(PAPER_BLUE);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
 	gotoxy(9, 16);
 	printf("Press any key...");
-	for (c = 4; c != 28; ++c)
-		set_attr(16, c, TITLE_ATTR);
 
 	wait_any_key();
 }
@@ -1355,7 +1386,8 @@ void popup_fix_attrs(unsigned char inner_attr) __z88dk_fastcall
 {
 	static unsigned char c;
 	for (c = 6; c <= 25; ++c) {
-		set_attr(11, c, inner_attr);
+		
+		tr(11, c, inner_attr);
 		set_attr(12, c, inner_attr);
 		set_attr(13, c, inner_attr);
 	}
@@ -1646,6 +1678,52 @@ void level_intro()
 	zx_border(INK_BLACK);
 }
 
+void draw_menu()
+{
+	static unsigned char len;
+
+	zx_setink(INK_YELLOW);
+	zx_setpaper(PAPER_BLUE);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	len = sprintf(txt_buffer, " -= MAZE RUNNER =- ");
+	gotoxy(center_x(len), 3); printf(txt_buffer);
+
+	zx_setink(INK_WHITE);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+	len = sprintf(txt_buffer, "Select difficulty:");
+	gotoxy(center_x(len), 7); printf(txt_buffer);
+
+	zx_setink(INK_GREEN);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	len = sprintf(txt_buffer, "1 - Easy");
+	gotoxy(center_x(len), 10); printf(txt_buffer);
+
+	zx_setink(INK_YELLOW);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	len = sprintf(txt_buffer, "2 - Normal");
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+
+	zx_setink(INK_RED);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	len = sprintf(txt_buffer, "3 - Hard");
+	gotoxy(center_x(len), 14); printf(txt_buffer);
+
+	zx_setink(INK_MAGENTA);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	len = sprintf(txt_buffer, "4 - Nightmare");
+	gotoxy(center_x(len), 16); printf(txt_buffer);
+
+	/* Reset to default */
+	zx_setink(INK_WHITE);
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+}
+
 /* Frame-based timing (1 frame = 20ms at 50Hz) */
 #define KEY_REPEAT    4   /* held key repeats every 4 frames = 80ms */
 
@@ -1764,36 +1842,7 @@ main()
 			SP1_RFLAG_TILE | SP1_RFLAG_COLOUR);
 		sp1_UpdateNow();
 
-		{
-			static unsigned char len, c;
-			len = sprintf(txt_buffer, "-= MAZE RUNNER =-");
-			gotoxy(center_x(len), 3); printf(txt_buffer);
-			for (c = 6; c != 26; ++c)
-				set_attr(3, c, TITLE_ATTR);
-
-			len = sprintf(txt_buffer, "Select difficulty:");
-			gotoxy(center_x(len), 7); printf(txt_buffer);
-
-			len = sprintf(txt_buffer, "1 - Easy");
-			gotoxy(center_x(len), 10); printf(txt_buffer);
-			for (c = 12; c != 20; ++c)
-				set_attr(10, c, BRIGHT | INK_GREEN | PAPER_BLACK);
-
-			len = sprintf(txt_buffer, "2 - Normal");
-			gotoxy(center_x(len), 12); printf(txt_buffer);
-			for (c = 11; c != 21; ++c)
-				set_attr(12, c, BRIGHT | INK_YELLOW | PAPER_BLACK);
-
-			len = sprintf(txt_buffer, "3 - Hard");
-			gotoxy(center_x(len), 14); printf(txt_buffer);
-			for (c = 12; c != 20; ++c)
-				set_attr(14, c, BRIGHT | INK_RED | PAPER_BLACK);
-
-			len = sprintf(txt_buffer, "4 - Nightmare");
-			gotoxy(center_x(len), 16); printf(txt_buffer);
-			for (c = 10; c != 22; ++c)
-				set_attr(16, c, BRIGHT | INK_MAGENTA | PAPER_BLACK);
-		}
+		draw_menu();
 
 		/* Wait for 1/2/3; spin increments rseed for RNG seeding */
 		k = 0;
@@ -1912,6 +1961,7 @@ main()
 		draw_dot(px, py);
 		sp1_UpdateNow();
 
+		draw_hud_labels();
 		show_score();
 		set_row_attr(23, INK_WHITE | PAPER_BLACK);
 		fix_row0_attrs();
