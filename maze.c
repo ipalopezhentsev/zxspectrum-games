@@ -478,13 +478,13 @@ void draw_exit(unsigned char gx, unsigned char gy)
 
 void snd_step()
 {
-	bit_beep(0, 400);
+	bit_beep(1, 400);
 	intrinsic_ei();
 }
 
 void snd_bump()
 {
-	bit_beep(0, 800);
+	bit_beep(1, 800);
 	intrinsic_ei();
 }
 
@@ -500,8 +500,8 @@ void snd_caught()
 
 void snd_coin()
 {
-	bit_beep(0, 200);
-	bit_beep(0, 100);
+	bit_beep(1, 200);
+	bit_beep(1, 100);
 	intrinsic_ei();
 }
 
