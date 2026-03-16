@@ -58,13 +58,16 @@ Build/run cycle:
 ## TODO
 
 - speed up enemies with level?
-- title page
+- title page (list there main components with explanation)
 - joysticks?
 - web emul
+- bug: sometimes player walks through enemy, still
++ add tolerance on entering corridors
+- don't place enemies in possitions that don't allow me to pass them (not corner me)
 - don't open exit until min coins collected?
 - ay effects/music
 - demo mode
-- ability to collect "shot" and shoot 1 enemy
++ ability to collect "shot" and shoot 1 enemy
 - player figure -> man with several movement phases
 + use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
 +// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS

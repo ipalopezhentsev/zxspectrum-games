@@ -1797,6 +1797,53 @@ main()
 				else ppy += MOVE_SPEED;
 
 				panim--;
+
+				/* Corner tolerance: when 3px from destination,
+				   allow perpendicular turn by snapping early */
+				if (panim == 2) {
+					k = in_JoyKeyboard(&udk);
+					if (k) {
+						dx = 0; dy = 0;
+						if (k & in_LEFT)  dx = -1;
+						if (k & in_RIGHT) dx = 1;
+						if (k & in_UP)    dy = -1;
+						if (k & in_DOWN)  dy = 1;
+						if (dx && dy) dy = 0;
+						/* Check perpendicular input only */
+						if ((pdir <= 1 && dy && !dx) ||
+						    (pdir >= 2 && dx && !dy)) {
+							/* Compute destination grid pos */
+							static char dest_px, dest_py;
+							if (pdir == 0) dest_px = px - 1;
+							else if (pdir == 1) dest_px = px + 1;
+							else dest_px = px;
+							if (pdir == 2) dest_py = py - 1;
+							else if (pdir == 3) dest_py = py + 1;
+							else dest_py = py;
+							/* Check if turn is valid from dest */
+							if (!wallmap[erow_x_ecols[dest_py + dy] + dest_px + dx]) {
+								/* Snap to destination, start turn */
+								px = dest_px;
+								py = dest_py;
+								ppx = px * 8;
+								ppy = py * 8;
+								/* Start perpendicular move */
+								if (dx == -1) pdir = 0;
+								else if (dx == 1) pdir = 1;
+								else if (dy == -1) pdir = 2;
+								else pdir = 3;
+								panim = ANIM_FRAMES - 1;
+								if (pdir == 0) ppx -= MOVE_SPEED;
+								else if (pdir == 1) ppx += MOVE_SPEED;
+								else if (pdir == 2) ppy -= MOVE_SPEED;
+								else ppy += MOVE_SPEED;
+								snd_step();
+								goto snap_done;
+							}
+						}
+					}
+				}
+
 				if (panim == 0) {
 					/* Animation complete — update grid position */
 					if (pdir == 0) px--;
@@ -1806,6 +1853,7 @@ main()
 					ppx = px * 8;
 					ppy = py * 8;
 
+				snap_done:
 					/* Collect coin? */
 					if (try_collect_coin(px, py)) {
 						zx_border(INK_YELLOW);
