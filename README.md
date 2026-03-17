@@ -57,11 +57,16 @@ Build/run cycle:
 
 ## TODO
 
+# bugs:
+- sometimes player walks through enemy, still
+- when gameover/next level appears, it asks for "any key" forgetting that now we also have joystick control
+
+# features:
 - speed up enemies with level?
 - title page (list there main components with explanation)
 + joysticks?
 - web emul
-- bug: sometimes player walks through enemy, still
+- optimize memory, now there's only 1.1KB left
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music
 - demo mode

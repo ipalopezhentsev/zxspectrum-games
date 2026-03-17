@@ -1959,10 +1959,7 @@ main()
 			        (difficulty == 2) ? "Normal" :
 			        (difficulty == 3) ? "Hard" : "Nightmare";
 			{
-				static char *ctrl_name;
-				ctrl_name = (joy_type == 1) ? "Kempston" :
-				            (joy_type == 2) ? "Sinclair" : "O/P/Q/A";
-				len = sprintf(txt_buffer, "Lv%d [%s] %s", level, dname, ctrl_name);
+				len = sprintf(txt_buffer, "Lv%d [%s]", level, dname);
 			}
 			gotoxy(center_x(len), 23); printf(txt_buffer);
 		}
