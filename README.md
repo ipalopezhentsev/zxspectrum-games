@@ -59,21 +59,18 @@ Build/run cycle:
 
 # bugs:
 - sometimes player walks through enemy, still
-- when gameover/next level appears, it asks for "any key" forgetting that now we also have joystick control
+- time pretends to be in seconds but ticks slower - show just a counter then?
 
 # features:
 - speed up enemies with level?
 - title page (list there main components with explanation)
-+ joysticks?
 - web emul
-- optimize memory, now there's only 1.1KB left
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music
 - demo mode
 - player figure -> man with several movement phases
 + use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
 +// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
-+input.h - direct interface with user-input devices (keyboard, joystick, mouse)
 sound/aywyz.h - WYZ tracker for AY819x sound chips
 sound/bit.h - audio generation functions using a 1-bit device
 +stdlib.h - general utilities (sorting, number↔ascii, !!!!random numbers, …)

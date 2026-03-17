@@ -176,6 +176,15 @@ unsigned int bfs_adj_ptr_g;
 #define GUN_ATTR    (BRIGHT | INK_CYAN | PAPER_BLACK)
 #define SHOT_ATTR   (BRIGHT | INK_CYAN | PAPER_CYAN)
 
+/* Direction delta lookup tables: 0=left, 1=right, 2=up, 3=down */
+const char dir_dx[] = {-1, 1, 0, 0};
+const char dir_dy[] = {0, 0, -1, 1};
+/* Pixel deltas (dir_d * MOVE_SPEED) to avoid multiply */
+const char dir_dpx[] = {-MOVE_SPEED, MOVE_SPEED, 0, 0};
+const char dir_dpy[] = {0, 0, -MOVE_SPEED, MOVE_SPEED};
+/* Enemy attribute lookup by index */
+const unsigned char enemy_attrs[] = {ENEMY_ATTR, ENEMY2_ATTR, ENEMY3_ATTR, ENEMY4_ATTR};
+
 /* Exit position in expanded grid (randomized each level) */
 unsigned char exit_gx, exit_gy;
 
@@ -591,17 +600,28 @@ void snd_shot_hit()
 	intrinsic_ei();
 }
 
-/* Wait for all keys released, then wait for any key press. */
+/* Wait for all keys/buttons released, then wait for any key or joystick fire. */
 void wait_any_key()
 {
-	in_WaitForNoKey();
-	in_WaitForKey();
+	/* Wait for everything released */
+	while (in_Inkey() ||
+	       ((unsigned char)in_JoyKempston() & in_FIRE) ||
+	       ((unsigned char)in_JoySinclair1() & in_FIRE))
+		;
+	/* Wait for any key or joystick fire */
+	while (!in_Inkey() &&
+	       !((unsigned char)in_JoyKempston() & in_FIRE) &&
+	       !((unsigned char)in_JoySinclair1() & in_FIRE))
+		;
 }
 
-/* Wait until all keys are released */
+/* Wait until all keys and joystick buttons are released */
 void wait_key_release()
 {
-	in_WaitForNoKey();
+	while (in_Inkey() ||
+	       ((unsigned char)in_JoyKempston() & in_FIRE) ||
+	       ((unsigned char)in_JoySinclair1() & in_FIRE))
+		;
 }
 
 void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
@@ -622,13 +642,21 @@ void draw_coin(unsigned char cx, unsigned char cy)
 	sp1_PrintAtInv(SROW(gy), SCOL(gx), COIN_ATTR, 'C');
 }
 
+/* Check if any enemy occupies expanded grid position (gx, gy) */
+unsigned char is_enemy_at(unsigned char gx, unsigned char gy)
+{
+	static unsigned char ei;
+	for (ei = 0; ei != num_enemies; ++ei)
+		if (gx == enx[ei] && gy == eny[ei]) return 1;
+	return 0;
+}
+
 /* Place exactly target coins on maze cells.
    Pass 1: spaced placement (no adjacent coins, avoid entities).
    Pass 2: fill remaining in any free corridor cell. */
 void place_coins()
 {
 	static unsigned char target, idx, cx, cy, gx, gy;
-	static unsigned char skip, ei;
 	static int attempts;
 	coins_left = 0;
 	memset(coinmap, 0, ROWS * COLS);
@@ -647,10 +675,7 @@ void place_coins()
 		gy = cy * 2 + 1;
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
-		skip = 0;
-		for (ei = 0; ei != num_enemies; ++ei)
-			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
-		if (skip) continue;
+		if (is_enemy_at(gx, gy)) continue;
 		if (cx > 0 && coinmap[idx - 1]) continue;
 		if (cx < COLS - 1 && coinmap[idx + 1]) continue;
 		if (cy > 0 && coinmap[idx - COLS]) continue;
@@ -672,10 +697,7 @@ void place_coins()
 		gy = cy * 2 + 1;
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
-		skip = 0;
-		for (ei = 0; ei != num_enemies; ++ei)
-			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
-		if (skip) continue;
+		if (is_enemy_at(gx, gy)) continue;
 		coinmap[idx] = 1;
 		coins_left++;
 		draw_coin(cx, cy);
@@ -685,7 +707,7 @@ void place_coins()
 /* Place a gun pickup at a random corridor cell */
 void place_gun()
 {
-	static unsigned char cx, cy, gx, gy, attempts, ei, skip;
+	static unsigned char cx, cy, gx, gy, attempts;
 	gun_placed = 0;
 	has_gun = 0;
 	attempts = 50;
@@ -697,10 +719,7 @@ void place_gun()
 		gy = (cy << 1) + 1;
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
-		skip = 0;
-		for (ei = 0; ei != num_enemies; ++ei)
-			if (gx == enx[ei] && gy == eny[ei]) skip = 1;
-		if (skip) continue;
+		if (is_enemy_at(gx, gy)) continue;
 		/* Avoid placing on a coin */
 		if (coinmap[cy * COLS + cx]) continue;
 		gun_gx = gx;
@@ -866,10 +885,8 @@ void fire_shot()
 	hit_enemy = 255;
 	path_len = 0;
 
-	if (pdir == 0) { ddx = -1; ddy = 0; }
-	else if (pdir == 1) { ddx = 1; ddy = 0; }
-	else if (pdir == 2) { ddx = 0; ddy = -1; }
-	else { ddx = 0; ddy = 1; }
+	ddx = dir_dx[pdir];
+	ddy = dir_dy[pdir];
 
 	/* Trace path, flash attrs, find enemy */
 	gx = px; gy = py;
@@ -988,7 +1005,7 @@ void show_hiscores(char rank) __z88dk_fastcall
 	zx_setpaper(PAPER_BLUE);
 	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
 	gotoxy(9, 16);
-	printf("Press any key...");
+	printf("Press any button.");
 
 	wait_any_key();
 }
@@ -1297,10 +1314,8 @@ void start_enemy_move(unsigned char n, char dir)
 	eanim[sn] = ANIM_FRAMES - 1;
 
 	/* First pixel advance */
-	if (dir == 0) epx[sn] -= MOVE_SPEED;
-	else if (dir == 1) epx[sn] += MOVE_SPEED;
-	else if (dir == 2) epy[sn] -= MOVE_SPEED;
-	else epy[sn] += MOVE_SPEED;
+	epx[sn] += dir_dpx[dir];
+	epy[sn] += dir_dpy[dir];
 }
 
 /* Advance enemy n's animation by one frame.
@@ -1312,18 +1327,14 @@ void advance_enemy_anim(unsigned char n)
 	d = edir_anim[sn];
 
 	/* Advance pixel position */
-	if (d == 0) epx[sn] -= MOVE_SPEED;
-	else if (d == 1) epx[sn] += MOVE_SPEED;
-	else if (d == 2) epy[sn] -= MOVE_SPEED;
-	else epy[sn] += MOVE_SPEED;
+	epx[sn] += dir_dpx[d];
+	epy[sn] += dir_dpy[d];
 
 	eanim[sn]--;
 	if (eanim[sn] == 0) {
 		/* Animation complete — update grid position */
-		if (d == 0) enx[sn]--;
-		else if (d == 1) enx[sn]++;
-		else if (d == 2) eny[sn]--;
-		else eny[sn]++;
+		enx[sn] += dir_dx[d];
+		eny[sn] += dir_dy[d];
 
 		/* Snap pixel position */
 		epx[sn] = enx[sn] * 8;
@@ -1416,65 +1427,28 @@ void win_cut_scene()
 	gotoxy(center_x(len), 11); printf(txt_buffer);
 	len = sprintf(txt_buffer, "Time bonus: +%d", timer_sec);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Any key - next level");
+	len = sprintf(txt_buffer, "Fire - next level");
 	gotoxy(center_x(len), 13); printf(txt_buffer);
 	popup_fix_attrs(BRIGHT | INK_BLACK | PAPER_GREEN);
 }
 
-void coins_lost_cut_scene()
+/* Generic loss cut-scene: snd_type 0=caught, 1=coins_lost */
+void loss_cut_scene(char *title, unsigned char snd_type)
 {
+	static unsigned char len;
 	zx_border(INK_RED);
-	snd_coins_lost();
+	if (snd_type) snd_coins_lost();
+	else snd_caught();
 	zx_border(INK_BLACK);
 	draw_popup_bg(
 		BRIGHT | INK_YELLOW | PAPER_RED,
 		BRIGHT | INK_WHITE  | PAPER_RED);
 	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
-	static unsigned char len;
-	len = sprintf(txt_buffer, "** ENEMIES ATE TOO MANY COINS! **");
-	gotoxy(center_x(len), 11); printf(txt_buffer);
+	len = strlen(title);
+	gotoxy(center_x(len), 11); printf(title);
 	len = sprintf(txt_buffer, "Score: %d", score);
 	gotoxy(center_x(len), 12); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Press any key...");
-	gotoxy(center_x(len), 13); printf(txt_buffer);
-	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
-}
-
-void game_over_cut_scene()
-{
-	zx_border(INK_RED);
-	snd_caught();
-	zx_border(INK_BLACK);
-	draw_popup_bg(
-		BRIGHT | INK_YELLOW | PAPER_RED,
-		BRIGHT | INK_WHITE  | PAPER_RED);
-	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
-	static unsigned char len;
-	len = sprintf(txt_buffer, "** CAUGHT! **");
-	gotoxy(center_x(len), 11); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Score: %d", score);
-	gotoxy(center_x(len), 12); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Press any key...");
-	gotoxy(center_x(len), 13); printf(txt_buffer);
-	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
-}
-
-void time_up_cut_scene()
-{
-	zx_border(INK_RED);
-	snd_caught();
-	zx_border(INK_BLACK);
-	draw_popup_bg(
-		BRIGHT | INK_YELLOW | PAPER_RED,
-		BRIGHT | INK_WHITE  | PAPER_RED);
-	set_print_attr(BRIGHT | INK_WHITE | PAPER_RED);
-	static unsigned char len;
-	len = sprintf(txt_buffer, "** TIME UP! **");
-	gotoxy(center_x(len), 11); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Score: %d", score);
-	gotoxy(center_x(len), 12); printf(txt_buffer);
-	len = sprintf(txt_buffer, "Press any key...");
-	gotoxy(center_x(len), 13); printf(txt_buffer);
+	gotoxy(center_x(16), 13); printf("Press any button.");
 	popup_fix_attrs(BRIGHT | INK_WHITE | PAPER_RED);
 }
 
@@ -1495,8 +1469,7 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 		static unsigned char ei;
 		for (ei = 0; ei != num_enemies; ++ei)
 			if (gx == enx[ei] && gy == eny[ei])
-				return (ei == 0) ? ENEMY_ATTR  : (ei == 1) ? ENEMY2_ATTR :
-				       (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+				return enemy_attrs[ei];
 	}
 	/* Gun pickup */
 	if (gun_placed && gx == gun_gx && gy == gun_gy) return GUN_ATTR;
@@ -1506,41 +1479,33 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 	return CORR_ATTR;
 }
 
-/* Paint the outline (border only) of a rectangle centred on (sr,sc)
-   with the given attribute.  Radius is half-size in character cells. */
+/* Paint or restore the outline of a rectangle centred on (sr,sc).
+   restore=0: paint with 'attr'.  restore=1: restore from maze_attr_at(). */
 void draw_attr_ring(unsigned char sr, unsigned char sc,
-                    unsigned char radius, unsigned char attr)
+                    unsigned char radius, unsigned char attr,
+                    unsigned char restore)
 {
 	static int r, c, r1, c1, r2, c2;
+	static unsigned char a;
 	r1 = (int)sr - radius;  r2 = (int)sr + radius;
 	c1 = (int)sc - radius;  c2 = (int)sc + radius;
 	if (r1 < 0)  r1 = 0;   if (r2 > 23) r2 = 23;
 	if (c1 < 0)  c1 = 0;   if (c2 > 31) c2 = 31;
 	for (c = c1; c <= c2; ++c) {
-		set_attr(r1, c, attr);
-		if (r2 != r1) set_attr(r2, c, attr);
+		a = restore ? maze_attr_at(r1, c) : attr;
+		set_attr(r1, c, a);
+		if (r2 != r1) {
+			a = restore ? maze_attr_at(r2, c) : attr;
+			set_attr(r2, c, a);
+		}
 	}
 	for (r = r1 + 1; r < r2; ++r) {
-		set_attr(r, c1, attr);
-		if (c2 != c1) set_attr(r, c2, attr);
-	}
-}
-
-/* Restore the outline painted by draw_attr_ring back to maze colours. */
-void restore_attr_ring(unsigned char sr, unsigned char sc, unsigned char radius)
-{
-	static int r, c, r1, c1, r2, c2;
-	r1 = (int)sr - radius;  r2 = (int)sr + radius;
-	c1 = (int)sc - radius;  c2 = (int)sc + radius;
-	if (r1 < 0)  r1 = 0;   if (r2 > 23) r2 = 23;
-	if (c1 < 0)  c1 = 0;   if (c2 > 31) c2 = 31;
-	for (c = c1; c <= c2; ++c) {
-		set_attr(r1, c, maze_attr_at(r1, c));
-		if (r2 != r1) set_attr(r2, c, maze_attr_at(r2, c));
-	}
-	for (r = r1 + 1; r < r2; ++r) {
-		set_attr(r, c1, maze_attr_at(r, c1));
-		if (c2 != c1) set_attr(r, c2, maze_attr_at(r, c2));
+		a = restore ? maze_attr_at(r, c1) : attr;
+		set_attr(r, c1, a);
+		if (c2 != c1) {
+			a = restore ? maze_attr_at(r, c2) : attr;
+			set_attr(r, c2, a);
+		}
 	}
 }
 
@@ -1574,9 +1539,9 @@ void level_intro()
 	bit_beep(10, 180); intrinsic_ei();
 
 	for (radius = 7; radius != 0; --radius) {
-		draw_attr_ring(sr, sc, radius, EXIT_LOCKED_ATTR);
+		draw_attr_ring(sr, sc, radius, EXIT_LOCKED_ATTR, 0);
 		for (f = 0; f != 2; ++f) intrinsic_halt();
-		restore_attr_ring(sr, sc, radius);
+		draw_attr_ring(sr, sc, radius, 0, 1);
 	}
 
 	set_attr(sr, sc, EXIT_LOCKED_ATTR);
@@ -1589,8 +1554,7 @@ void level_intro()
 	for (ei = 0; ei != num_enemies; ++ei) {
 		sr = MAZE_R0 + eny[ei];
 		sc = MAZE_C0 + enx[ei];
-		ea = (ei == 0) ? ENEMY_ATTR  : (ei == 1) ? ENEMY2_ATTR :
-		     (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+		ea = enemy_attrs[ei];
 
 		/* Fat bass thump */
 		bit_beep(30, 1500); intrinsic_ei();
@@ -1598,9 +1562,9 @@ void level_intro()
 
 		/* Zoom-in: large ring shrinks down to the entity cell */
 		for (radius = 7; radius != 0; --radius) {
-			draw_attr_ring(sr, sc, radius, ea);
+			draw_attr_ring(sr, sc, radius, ea, 0);
 			for (f = 0; f != 2; ++f) intrinsic_halt();
-			restore_attr_ring(sr, sc, radius);
+			draw_attr_ring(sr, sc, radius, 0, 1);
 		}
 
 		/* Flash the entity cell then reveal the sprite */
@@ -1621,9 +1585,9 @@ void level_intro()
 	bit_beep(12, 200); intrinsic_ei();
 
 	for (radius = 7; radius != 0; --radius) {
-		draw_attr_ring(sr, sc, radius, PLAYER_ATTR);
+		draw_attr_ring(sr, sc, radius, PLAYER_ATTR, 0);
 		for (f = 0; f != 2; ++f) intrinsic_halt();
-		restore_attr_ring(sr, sc, radius);
+		draw_attr_ring(sr, sc, radius, 0, 1);
 	}
 
 	set_attr(sr, sc, PLAYER_ATTR);
@@ -1642,9 +1606,9 @@ void level_intro()
 		bit_beep(6, 120); intrinsic_ei();
 
 		for (radius = 7; radius != 0; --radius) {
-			draw_attr_ring(sr, sc, radius, GUN_ATTR);
+			draw_attr_ring(sr, sc, radius, GUN_ATTR, 0);
 			for (f = 0; f != 2; ++f) intrinsic_halt();
-			restore_attr_ring(sr, sc, radius);
+			draw_attr_ring(sr, sc, radius, 0, 1);
 		}
 
 		set_attr(sr, sc, GUN_ATTR);
@@ -1832,8 +1796,7 @@ main()
 			sp1_AddColSpr(spr_enemies[ei], SP1_DRAW_MASK2NR, 0, 46, 2);
 			spr_enemies[ei]->xthresh = 1;
 			spr_enemies[ei]->ythresh = 1;
-			ea = (ei == 0) ? ENEMY_ATTR : (ei == 1) ? ENEMY2_ATTR :
-			     (ei == 2) ? ENEMY3_ATTR : ENEMY4_ATTR;
+			ea = enemy_attrs[ei];
 			sp1_set_spr_colour(spr_enemies[ei], ea);
 		}
 	}
@@ -2026,10 +1989,8 @@ main()
 			/* --- Player pixel-scrolling movement --- */
 			if (panim > 0) {
 				/* Continue animation */
-				if (pdir == 0) ppx -= MOVE_SPEED;
-				else if (pdir == 1) ppx += MOVE_SPEED;
-				else if (pdir == 2) ppy -= MOVE_SPEED;
-				else ppy += MOVE_SPEED;
+				ppx += dir_dpx[pdir];
+				ppy += dir_dpy[pdir];
 
 				panim--;
 
@@ -2049,12 +2010,8 @@ main()
 						    (pdir >= 2 && dx && !dy)) {
 							/* Compute destination grid pos */
 							static char dest_px, dest_py;
-							if (pdir == 0) dest_px = px - 1;
-							else if (pdir == 1) dest_px = px + 1;
-							else dest_px = px;
-							if (pdir == 2) dest_py = py - 1;
-							else if (pdir == 3) dest_py = py + 1;
-							else dest_py = py;
+							dest_px = px + dir_dx[pdir];
+							dest_py = py + dir_dy[pdir];
 							/* Check if turn is valid from dest */
 							if (!wallmap[erow_x_ecols[dest_py + dy] + dest_px + dx]) {
 								/* Snap to destination, start turn */
@@ -2068,10 +2025,8 @@ main()
 								else if (dy == -1) pdir = 2;
 								else pdir = 3;
 								panim = ANIM_FRAMES - 1;
-								if (pdir == 0) ppx -= MOVE_SPEED;
-								else if (pdir == 1) ppx += MOVE_SPEED;
-								else if (pdir == 2) ppy -= MOVE_SPEED;
-								else ppy += MOVE_SPEED;
+								ppx += dir_dpx[pdir];
+								ppy += dir_dpy[pdir];
 								snd_step();
 								goto snap_done;
 							}
@@ -2081,10 +2036,8 @@ main()
 
 				if (panim == 0) {
 					/* Animation complete — update grid position */
-					if (pdir == 0) px--;
-					else if (pdir == 1) px++;
-					else if (pdir == 2) py--;
-					else py++;
+					px += dir_dx[pdir];
+					py += dir_dy[pdir];
 					ppx = px * 8;
 					ppy = py * 8;
 
@@ -2168,10 +2121,8 @@ main()
 					else pdir = 3;
 					panim = ANIM_FRAMES - 1;
 					/* First pixel advance */
-					if (pdir == 0) ppx -= MOVE_SPEED;
-					else if (pdir == 1) ppx += MOVE_SPEED;
-					else if (pdir == 2) ppy -= MOVE_SPEED;
-					else ppy += MOVE_SPEED;
+					ppx += dir_dpx[pdir];
+					ppy += dir_dpy[pdir];
 					snd_step();
 				} else if (dx || dy) {
 					snd_bump();
@@ -2220,7 +2171,7 @@ main()
 				if (!exit_open &&
 				    coins_collected + coins_left < coins_needed) {
 					sp1_UpdateNow();
-					coins_lost_cut_scene();
+					loss_cut_scene("** ENEMIES ATE TOO MANY COINS! **", 1);
 					wait_any_key();
 					rank = update_hiscores();
 					show_hiscores(rank);
@@ -2259,7 +2210,7 @@ main()
 					if (timer_sec == 10)
 						zx_border(INK_RED);
 					if (timer_sec == 0) {
-						time_up_cut_scene();
+						loss_cut_scene("** TIME UP! **", 0);
 						wait_any_key();
 						rank = update_hiscores();
 						show_hiscores(rank);
@@ -2272,7 +2223,7 @@ main()
 			}
 
 			if (caught) {
-				game_over_cut_scene();
+				loss_cut_scene("** CAUGHT! **", 0);
 				wait_any_key();
 				rank = update_hiscores();
 				show_hiscores(rank);
