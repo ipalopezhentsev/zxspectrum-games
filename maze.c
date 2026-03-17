@@ -86,6 +86,10 @@ unsigned char extra_wall_pct; /* 1-in-N chance to remove a wall */
 unsigned char extra_halls_base; /* base number of extra halls */
 unsigned char extra_halls_rng;  /* random additional halls */
 unsigned char time_limit;       /* seconds per level for this difficulty */
+unsigned char base_enemies;     /* starting num_enemies for chosen difficulty */
+unsigned char base_frames;      /* starting enemy_frames for chosen difficulty */
+unsigned char base_chase;       /* starting chase_pct for chosen difficulty */
+unsigned char base_time;        /* starting time_limit for chosen difficulty */
 
 /* Gun pickup state */
 unsigned char gun_gx, gun_gy;  /* gun position in expanded grid */
@@ -1912,37 +1916,37 @@ main()
 		srand(rseed);
 
 		if (difficulty == 1) {
-			num_enemies = 1;
-			enemy_frames = 8;
-			chase_pct = 10;
+			base_enemies = 1;
+			base_frames = 8;
+			base_chase = 10;
 			extra_wall_pct = 3;   /* 1-in-3 = ~33% walls removed */
 			extra_halls_base = 5;
 			extra_halls_rng = 3;  /* 5-8 halls */
-			time_limit = 90;
+			base_time = 90;
 		} else if (difficulty == 2) {
-			num_enemies = 2;
-			enemy_frames = 6;
-			chase_pct = 25;
+			base_enemies = 2;
+			base_frames = 6;
+			base_chase = 25;
 			extra_wall_pct = 5;   /* 1-in-5 = ~20% walls removed */
 			extra_halls_base = 3;
 			extra_halls_rng = 2;  /* 3-5 halls */
-			time_limit = 60;
+			base_time = 60;
 		} else if (difficulty == 3) {
-			num_enemies = 3;
-			enemy_frames = 4;
-			chase_pct = 50;
+			base_enemies = 3;
+			base_frames = 4;
+			base_chase = 50;
 			extra_wall_pct = 8;   /* 1-in-8 = ~12% walls removed */
 			extra_halls_base = 1;
 			extra_halls_rng = 1;  /* 1-2 halls */
-			time_limit = 45;
+			base_time = 45;
 		} else {
-			num_enemies = 4;
-			enemy_frames = 3;
-			chase_pct = 70;
+			base_enemies = 4;
+			base_frames = 3;
+			base_chase = 70;
 			extra_wall_pct = 10;  /* 1-in-10 = ~10% walls removed */
 			extra_halls_base = 1;
 			extra_halls_rng = 0;  /* 1 hall */
-			time_limit = 30;
+			base_time = 30;
 		}
 
 	game_over = 0;
@@ -1950,6 +1954,30 @@ main()
 		zx_border(INK_BLACK);
 
 		level++;
+
+		/* Level progression: enemies get tougher each level */
+		{
+			static int prog;  /* levels of progression past base */
+			static int v;     /* temp for clamped calculations */
+			prog = level - 1; /* level 1 = base settings */
+
+			/* Add an enemy every 10 levels, cap at 4 */
+			v = base_enemies + prog / 10;
+			num_enemies = (v > 4) ? 4 : v;
+
+			/* Speed up enemies: -1 frame every 2 levels, min 2 */
+			v = base_frames - prog / 2;
+			enemy_frames = (v < 2) ? 2 : v;
+
+			/* Increase chase AI: +35% per level, cap at 100 */
+			v = base_chase + prog * 35;
+			chase_pct = (v > 100) ? 100 : v;
+
+			/* Reduce time: -3 sec per level, min 15 */
+			v = base_time - prog * 3;
+			time_limit = (v < 15) ? 15 : v;
+		}
+
 		/* Clear screen via SP1 for new level */
 		hide_sprites();
 		sp1_ClearRectInv(&full_screen, INK_WHITE | PAPER_BLACK, ' ',

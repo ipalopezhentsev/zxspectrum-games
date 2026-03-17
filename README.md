@@ -62,7 +62,7 @@ Build/run cycle:
 - time pretends to be in seconds but ticks slower - show just a counter then?
 
 # features:
-- speed up enemies with level?
++ speed up enemies with level?
 - web emul
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music
