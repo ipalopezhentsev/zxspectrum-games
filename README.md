@@ -63,7 +63,6 @@ Build/run cycle:
 
 # features:
 - speed up enemies with level?
-- title page (list there main components with explanation)
 - web emul
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music

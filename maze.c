@@ -261,6 +261,7 @@ const unsigned char floor_tile[8] = {
 /* Raw 8-byte graphics for frame generation (pixel scrolling) */
 const unsigned char gfx_player[8] = {0x00, 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0x00};
 const unsigned char gfx_enemy[8]  = {0x00, 0x10, 0x28, 0x54, 0x28, 0x10, 0x00, 0x00};
+const unsigned char gfx_exit_tile[8] = {0x00, 0x82, 0x44, 0x28, 0x10, 0x28, 0x44, 0x82};
 
 
 /* Set attribute for character cell (row, col).
@@ -1669,7 +1670,7 @@ void draw_item(unsigned char row, char *text, unsigned char sel)
 	}
 	zx_setpaper(PAPER_BLACK);
 	sprintf(txt_buffer, s ? "> %-22s" : "  %-22s", tp);
-	gotoxy(4, r);
+	gotoxy(27, r);
 	printf(txt_buffer);
 }
 
@@ -1688,7 +1689,7 @@ void draw_menu()
 	zx_setink(INK_WHITE);
 	zx_setpaper(PAPER_BLACK);
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
-	gotoxy(4, 4); printf("Difficulty:");
+	gotoxy(27, 4); printf("Difficulty:");
 
 	draw_item(5,  "Easy",      menu_cursor == 0);
 	draw_item(6,  "Normal",    menu_cursor == 1);
@@ -1702,9 +1703,46 @@ void draw_menu()
 	len = sprintf(txt_buffer, "Q/A: select  FIRE: start");
 	gotoxy(center_x(len), 10); printf(txt_buffer);
 
+	/* Main Cast — render SP1 tile icons first, then text on top */
+	sp1_PrintAtInv(14, 7, PLAYER_ATTR, 'P');
+	sp1_PrintAtInv(15, 7, ENEMY_ATTR, 'E');
+	sp1_PrintAtInv(16, 7, COIN_ATTR, 'C');
+	sp1_PrintAtInv(17, 7, EXIT_LOCKED_ATTR, 'X');
+	sp1_PrintAtInv(18, 7, GUN_ATTR, 'G');
+	sp1_PrintAtInv(19, 7, WALL_ATTR, 'B');
+	sp1_UpdateNow();
+
+	zx_setpaper(PAPER_BLACK);
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	zx_setink(INK_YELLOW);
+	len = sprintf(txt_buffer, "--- The Cast ---");
+	gotoxy(center_x(len), 12); printf(txt_buffer);
+
+	zx_setink(INK_GREEN);
+	gotoxy(18, 14); printf("YOU    Escape the maze alive!");
+
+	zx_setink(INK_RED);
+	gotoxy(18, 15); printf("GHOST  Hunts you & steals coins");
+
+	zx_setink(INK_YELLOW);
+	gotoxy(18, 16); printf("COIN   Grab enough to open exit");
+
+	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+	zx_setink(INK_RED);
+	gotoxy(18, 17); printf("EXIT   Locked until quota met");
+
+	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	zx_setink(INK_CYAN);
+	gotoxy(18, 18); printf("GUN    Stun ghosts for 8 sec");
+
+	zx_setink(INK_RED);
+	gotoxy(18, 19); printf("WALL   Don't get cornered!");
+
 	zx_setink(INK_WHITE);
 	zx_setpaper(PAPER_BLACK);
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+	len = sprintf(txt_buffer, "(c) 2026 Ilya Palopezhentsev");
+	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
 
 /* Frame-based timing (1 frame = 20ms at 50Hz) */
@@ -1767,6 +1805,9 @@ main()
 	sp1_TileEntry('C', spr_coin);
 	sp1_TileEntry('F', floor_tile);
 	sp1_TileEntry('G', spr_gun);
+	sp1_TileEntry('P', gfx_player);
+	sp1_TileEntry('E', gfx_enemy);
+	sp1_TileEntry('X', gfx_exit_tile);
 
 	/* Set print attributes to white ink on black paper globally */
 	set_print_attr(INK_WHITE | PAPER_BLACK);
@@ -1821,6 +1862,7 @@ main()
 		/* Clear screen directly — avoids SP1/console driver conflicts */
 		memset((unsigned char *)16384u, 0, 6144u);
 		memset((unsigned char *)22528u, INK_WHITE | PAPER_BLACK, 768u);
+		zx_border(INK_BLACK);
 		gotoxy(0, 0);
 
 		/* Init selections: default Normal */
