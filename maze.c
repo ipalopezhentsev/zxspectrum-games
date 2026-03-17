@@ -10,7 +10,7 @@
 #include <arch/zx/sprites/sp1.h>
 #include <malloc.h>
 
-#pragma output CRT_ORG_CODE = 0x6000
+#pragma output CRT_ORG_CODE = 0x5E00
 #pragma output STACKPTR=0xD000
 
 #define TEXT_SCR_WIDTH 64
@@ -64,6 +64,9 @@ unsigned char framebuf_enemies[4][92];
 unsigned int rseed;
 /* User-defined keys for in_JoyKeyboard() — OPQA directions */
 struct in_UDK udk;
+unsigned char joy_type;    /* 0=keyboard, 1=kempston, 2=sinclair */
+unsigned char menu_cursor; /* 0-3=difficulty */
+unsigned char diff_cursor; /* 0-3: last selected difficulty item */
 
 /* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char coinmap[ROWS * COLS];
@@ -1387,7 +1390,7 @@ void popup_fix_attrs(unsigned char inner_attr) __z88dk_fastcall
 	static unsigned char c;
 	for (c = 6; c <= 25; ++c) {
 		
-		tr(11, c, inner_attr);
+		set_attr(11, c, inner_attr);
 		set_attr(12, c, inner_attr);
 		set_attr(13, c, inner_attr);
 	}
@@ -1678,47 +1681,63 @@ void level_intro()
 	zx_border(INK_BLACK);
 }
 
+unsigned char read_joy()
+{
+    if (joy_type == 1) return (unsigned char)in_JoyKempston();
+    if (joy_type == 2) return (unsigned char)in_JoySinclair1();
+    return (unsigned char)in_JoyKeyboard(&udk);
+}
+
+
+/* Draw one menu row: bright cyan with ">" when selected, dim white otherwise.
+   Uses %-22s padding so switching to a shorter item clears old text. */
+void draw_item(unsigned char row, char *text, unsigned char sel)
+{
+	static unsigned char r, s;
+	static char *tp;
+	r = row; tp = text; s = sel;
+	if (s) {
+		zx_setink(INK_CYAN);
+		*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
+	} else {
+		zx_setink(INK_WHITE);
+		*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+	}
+	zx_setpaper(PAPER_BLACK);
+	sprintf(txt_buffer, s ? "> %-22s" : "  %-22s", tp);
+	gotoxy(4, r);
+	printf(txt_buffer);
+}
+
 void draw_menu()
 {
 	static unsigned char len;
 
+	/* Title */
 	zx_setink(INK_YELLOW);
 	zx_setpaper(PAPER_BLUE);
 	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
 	len = sprintf(txt_buffer, " -= MAZE RUNNER =- ");
-	gotoxy(center_x(len), 3); printf(txt_buffer);
+	gotoxy(center_x(len), 2); printf(txt_buffer);
 
+	/* Difficulty section */
 	zx_setink(INK_WHITE);
 	zx_setpaper(PAPER_BLACK);
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
-	len = sprintf(txt_buffer, "Select difficulty:");
-	gotoxy(center_x(len), 7); printf(txt_buffer);
+	gotoxy(4, 4); printf("Difficulty:");
 
-	zx_setink(INK_GREEN);
+	draw_item(5,  "Easy",      menu_cursor == 0);
+	draw_item(6,  "Normal",    menu_cursor == 1);
+	draw_item(7,  "Hard",      menu_cursor == 2);
+	draw_item(8,  "Nightmare", menu_cursor == 3);
+
+	/* Footer */
+	zx_setink(INK_CYAN);
 	zx_setpaper(PAPER_BLACK);
-	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
-	len = sprintf(txt_buffer, "1 - Easy");
+	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
+	len = sprintf(txt_buffer, "Q/A: select  FIRE: start");
 	gotoxy(center_x(len), 10); printf(txt_buffer);
 
-	zx_setink(INK_YELLOW);
-	zx_setpaper(PAPER_BLACK);
-	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
-	len = sprintf(txt_buffer, "2 - Normal");
-	gotoxy(center_x(len), 12); printf(txt_buffer);
-
-	zx_setink(INK_RED);
-	zx_setpaper(PAPER_BLACK);
-	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
-	len = sprintf(txt_buffer, "3 - Hard");
-	gotoxy(center_x(len), 14); printf(txt_buffer);
-
-	zx_setink(INK_MAGENTA);
-	zx_setpaper(PAPER_BLACK);
-	*((unsigned char *)ATTR_P_ADDR) |= BRIGHT;
-	len = sprintf(txt_buffer, "4 - Nightmare");
-	gotoxy(center_x(len), 16); printf(txt_buffer);
-
-	/* Reset to default */
 	zx_setink(INK_WHITE);
 	zx_setpaper(PAPER_BLACK);
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
@@ -1836,24 +1855,56 @@ main()
 
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
-		/* Clear screen via SP1 */
-		hide_sprites();
-		sp1_ClearRectInv(&full_screen, PAPER_BLACK | INK_WHITE, ' ',
-			SP1_RFLAG_TILE | SP1_RFLAG_COLOUR);
-		sp1_UpdateNow();
+		/* Clear screen directly — avoids SP1/console driver conflicts */
+		memset((unsigned char *)16384u, 0, 6144u);
+		memset((unsigned char *)22528u, INK_WHITE | PAPER_BLACK, 768u);
+		gotoxy(0, 0);
 
+		/* Init selections: default Normal */
+		diff_cursor = 1;  /* Normal */
+		menu_cursor = diff_cursor;
 		draw_menu();
 
-		/* Wait for 1/2/3; spin increments rseed for RNG seeding */
-		k = 0;
-		while (k != '1' && k != '2' && k != '3' && k != '4') {
-			rseed++;
-			k = in_Inkey();
+		/* Q/A to select difficulty; fire on any device starts + sets joy_type.
+		   Sample initial joystick state first to avoid false triggers on
+		   floating bus (Kempston) or held buttons at startup. */
+		{
+			static unsigned char joy_k, joy_s, prev_k, prev_s;
+			prev_k = (unsigned char)in_JoyKempston() & in_FIRE;
+			prev_s = (unsigned char)in_JoySinclair1() & in_FIRE;
+			while (1) {
+				rseed++;
+				k = in_Inkey();
+				joy_k = (unsigned char)in_JoyKempston() & in_FIRE;
+				joy_s = (unsigned char)in_JoySinclair1() & in_FIRE;
+				if (k == 'q') {
+					if (diff_cursor > 0) diff_cursor--;
+					menu_cursor = diff_cursor;
+					draw_menu();
+					wait_key_release();
+				} else if (k == 'a') {
+					if (diff_cursor < 3) diff_cursor++;
+					menu_cursor = diff_cursor;
+					draw_menu();
+					wait_key_release();
+				} else if (k == '\r' || k == ' ') {
+					joy_type = 0;
+					break;
+				} else if (joy_k && !prev_k) {
+					joy_type = 1;
+					break;
+				} else if (joy_s && !prev_s) {
+					joy_type = 2;
+					break;
+				}
+				prev_k = joy_k;
+				prev_s = joy_s;
+			}
 		}
+		difficulty = diff_cursor + 1;
 		wait_key_release();
 		if (rseed == 0) rseed = 42;
 		srand(rseed);
-		difficulty = k - '0';
 
 		if (difficulty == 1) {
 			num_enemies = 1;
@@ -1907,7 +1958,12 @@ main()
 			dname = (difficulty == 1) ? "Easy" :
 			        (difficulty == 2) ? "Normal" :
 			        (difficulty == 3) ? "Hard" : "Nightmare";
-			len = sprintf(txt_buffer, "Lv%d [%s]  O/P/Q/A/SPC", level, dname);
+			{
+				static char *ctrl_name;
+				ctrl_name = (joy_type == 1) ? "Kempston" :
+				            (joy_type == 2) ? "Sinclair" : "O/P/Q/A";
+				len = sprintf(txt_buffer, "Lv%d [%s] %s", level, dname, ctrl_name);
+			}
 			gotoxy(center_x(len), 23); printf(txt_buffer);
 		}
 
@@ -1983,7 +2039,7 @@ main()
 				/* Corner tolerance: when 3px from destination,
 				   allow perpendicular turn by snapping early */
 				if (panim == 2) {
-					k = in_JoyKeyboard(&udk);
+					k = read_joy();
 					if (k) {
 						dx = 0; dy = 0;
 						if (k & in_LEFT)  dx = -1;
@@ -2095,7 +2151,7 @@ main()
 			if (panim == 0) {
 				/* Accept new input */
 				dx = 0; dy = 0;
-				k = in_JoyKeyboard(&udk);
+				k = read_joy();
 				/* Fire gun: space bar, takes priority over movement */
 				if (has_gun && (k & in_FIRE)) {
 					fire_shot();
