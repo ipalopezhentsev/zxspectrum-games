@@ -79,6 +79,7 @@ unsigned char exit_open;      /* 1 = exit unlocked */
 unsigned char hud_dirty;      /* 1 = redraw coins/score HUD after sp1_UpdateNow */
 unsigned char level;
 unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard, 4=Nightmare */
+unsigned char demo_mode;
 unsigned char num_enemies;   /* 1, 2, 3, or 4 */
 unsigned char enemy_frames;  /* frames between enemy moves */
 unsigned char chase_pct;     /* % chance enemy uses BFS chase */
@@ -154,12 +155,16 @@ unsigned int erow_x_ecols[EROWS];
    255 = wall or boundary. Built once after maze generation. */
 unsigned char adj[ROWS * COLS * 4];
 
+unsigned char nav_valid;  /* 0=need BFS, 1-4=cached dir+1 */
+
 /* Transient globals for inline-asm BFS loop */
 unsigned char bfs_efi_g;
 unsigned char bfs_head_g;
 unsigned char bfs_tail_g;
 unsigned char bfs_result_g;
 unsigned int bfs_adj_ptr_g;
+unsigned char bfs_mode_g;  /* 0=fixed direction (enemy), 1=propagate (demo) */
+unsigned char demo_target;   /* sticky coin target cell (255=none) */
 
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
@@ -528,12 +533,14 @@ void draw_exit(unsigned char gx, unsigned char gy)
 
 void snd_step()
 {
+	if (demo_mode) return;
 	bit_beep(1, 400);
 	intrinsic_ei();
 }
 
 void snd_bump()
 {
+	if (demo_mode) return;
 	bit_beep(1, 800);
 	intrinsic_ei();
 }
@@ -550,6 +557,7 @@ void snd_caught()
 
 void snd_coin()
 {
+	if (demo_mode) return;
 	bit_beep(1, 200);
 	bit_beep(1, 100);
 	intrinsic_ei();
@@ -557,6 +565,7 @@ void snd_coin()
 
 void snd_exit_open()
 {
+	if (demo_mode) return;
 	bit_beep(5, 300);
 	bit_beep(5, 200);
 	bit_beep(10, 100);
@@ -583,6 +592,7 @@ void snd_win()
 
 void snd_gun_pickup()
 {
+	if (demo_mode) return;
 	bit_beep(1, 150);
 	bit_beep(1, 100);
 	bit_beep(1, 50);
@@ -666,6 +676,13 @@ void place_coins()
 	coins_left = 0;
 	memset(coinmap, 0, ROWS * COLS);
 
+#ifdef DEBUG_ONE_COIN
+	/* Debug: single coin at bottom-right corner */
+	idx = ROWS * COLS - 1;
+	coinmap[idx] = 1;
+	coins_left = 1;
+	draw_coin(COLS - 1, ROWS - 1);
+#else
 	target = (ROWS * COLS) * 2 / 5;
 
 	/* Pass 1: place with spacing constraint */
@@ -707,6 +724,7 @@ void place_coins()
 		coins_left++;
 		draw_coin(cx, cy);
 	}
+#endif
 }
 
 /* Place a gun pickup at a random corridor cell */
@@ -754,6 +772,7 @@ unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
 		/* Check if we just hit the threshold to open the exit */
 		if (!exit_open && coins_collected >= coins_needed)
 			open_exit_gate();
+		if (demo_mode) nav_valid = 0;  /* recalculate path */
 		return 1;
 	}
 	return 0;
@@ -1032,31 +1051,16 @@ void build_adj()
 	}
 }
 
-/* BFS on maze cell grid with inline-asm inner loop.
-   Precomputed adj[] eliminates all walls/boundary checks.
-   Returns: 0=left,1=right,2=up,3=down, -1=no path */
-char enemy_bfs(unsigned char exx, unsigned char eyy)
+/* Shared BFS core. Caller sets up vis[], stk[], bfs globals before calling.
+   bfs_mode_g=0: fixed direction vis (enemy), depth limit 40
+   bfs_mode_g=1: propagate vis[ci] (demo), no depth limit
+   bfs_efi_g=255: search coinmap[ci]!=0, else: search ci==bfs_efi_g */
+void bfs_run_common()
 {
-	static unsigned char ecx, ecy, pcx, pcy;
-	static unsigned char ci;
-	static unsigned char d;
-
-	ecx = exx >> 1;  ecy = eyy >> 1;
-	pcx = px >> 1;   pcy = py >> 1;
-
-	bfs_efi_g = row_x_cols[ecy] + ecx;
-
-	bfs_head_g = 0;
-	bfs_tail_g = 1;
-	ci = row_x_cols[pcy] + pcx;
-	stk[0] = ci;
-	vis[ci] = 5;
-	bfs_result_g = 255;
-
+	static unsigned char i;
 #asm
 	push ix
 
-	;=== BFS main loop (inline asm for speed) ===
 .bfs_il_loop
 	; --- Check termination ---
 	ld a, (_bfs_head_g)
@@ -1064,9 +1068,14 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	ld a, (_bfs_tail_g)
 	cp b
 	jp z, bfs_il_end          ; head == tail, queue empty
+	; --- Depth limit (mode 0 only) ---
+	ld a, (_bfs_mode_g)
+	or a
+	jr nz, bfs_il_nodepl
 	ld a, b
 	cp 40
-	jp nc, bfs_il_end         ; head >= 40, depth limit
+	jp nc, bfs_il_end
+.bfs_il_nodepl
 
 	; --- Dequeue: ci = stk[head]; head++ ---
 	ld l, b
@@ -1078,34 +1087,65 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	ld a, b
 	ld (_bfs_head_g), a
 
-	; --- Check if found target ---
+	; --- Read vis[ci] for propagation mode ---
+	ld l, c
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	ld (_bfs_adj_ptr_g), a    ; low byte = vis[ci]
+
+	; --- Check target ---
 	ld a, (_bfs_efi_g)
+	cp 255
+	jr z, bfs_il_coinchk
+	; Single target mode: ci == efi?
 	cp c
 	jp z, bfs_il_found
+	jr bfs_il_expand
+.bfs_il_coinchk
+	; Coin search mode: coinmap[ci] != 0?
+	ld l, c
+	ld h, 0
+	ld de, _coinmap
+	add hl, de
+	ld a, (hl)
+	or a
+	jp nz, bfs_il_found
 
+.bfs_il_expand
 	; --- Compute adj base: HL = &adj[ci*4] ---
 	ld l, c
 	ld h, 0
 	add hl, hl
-	add hl, hl                ; HL = ci * 4
+	add hl, hl
 	ld de, _adj
-	add hl, de                ; HL = &adj[ci*4]
+	add hl, de
+	push hl
+	pop ix                    ; IX = &adj[ci*4]
 
-	; === Dir 0 (left), vis = 1 ===
-	ld a, (hl)
-	inc hl
-	ld (_bfs_adj_ptr_g), hl   ; save ptr for next dir
+	; === Dir 0 (left) ===
+	ld a, (ix+0)
 	cp 255
 	jr z, bfs_il_s0
-	ld e, a
-	ld d, 0
-	ld hl, _vis
+	ld c, a
+	ld l, c
+	ld h, 0
+	ld de, _vis
 	add hl, de
 	ld a, (hl)
 	or a
 	jr nz, bfs_il_s0
+	; Set vis[ni]: mode 1=propagate, else fixed
+	ld a, (_bfs_mode_g)
+	cp 1
+	jr z, bfs_il_p0
 	ld (hl), 1
-	ld c, e                   ; C = ni (ci no longer needed)
+	jr bfs_il_e0
+.bfs_il_p0
+	ld a, (_bfs_adj_ptr_g)
+	ld (hl), a
+.bfs_il_e0
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
@@ -1116,22 +1156,27 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	ld (_bfs_tail_g), a
 .bfs_il_s0
 
-	; === Dir 1 (right), vis = 2 ===
-	ld hl, (_bfs_adj_ptr_g)
-	ld a, (hl)
-	inc hl
-	ld (_bfs_adj_ptr_g), hl
+	; === Dir 1 (right) ===
+	ld a, (ix+1)
 	cp 255
 	jr z, bfs_il_s1
-	ld e, a
-	ld d, 0
-	ld hl, _vis
+	ld c, a
+	ld l, c
+	ld h, 0
+	ld de, _vis
 	add hl, de
 	ld a, (hl)
 	or a
 	jr nz, bfs_il_s1
+	ld a, (_bfs_mode_g)
+	cp 1
+	jr z, bfs_il_p1
 	ld (hl), 2
-	ld c, e
+	jr bfs_il_e1
+.bfs_il_p1
+	ld a, (_bfs_adj_ptr_g)
+	ld (hl), a
+.bfs_il_e1
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
@@ -1142,22 +1187,27 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	ld (_bfs_tail_g), a
 .bfs_il_s1
 
-	; === Dir 2 (up), vis = 3 ===
-	ld hl, (_bfs_adj_ptr_g)
-	ld a, (hl)
-	inc hl
-	ld (_bfs_adj_ptr_g), hl
+	; === Dir 2 (up) ===
+	ld a, (ix+2)
 	cp 255
 	jr z, bfs_il_s2
-	ld e, a
-	ld d, 0
-	ld hl, _vis
+	ld c, a
+	ld l, c
+	ld h, 0
+	ld de, _vis
 	add hl, de
 	ld a, (hl)
 	or a
 	jr nz, bfs_il_s2
+	ld a, (_bfs_mode_g)
+	cp 1
+	jr z, bfs_il_p2
 	ld (hl), 3
-	ld c, e
+	jr bfs_il_e2
+.bfs_il_p2
+	ld a, (_bfs_adj_ptr_g)
+	ld (hl), a
+.bfs_il_e2
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
@@ -1168,21 +1218,27 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	ld (_bfs_tail_g), a
 .bfs_il_s2
 
-	; === Dir 3 (down), vis = 4 ===
-	ld hl, (_bfs_adj_ptr_g)
-	ld a, (hl)
-	; (no need to save adj ptr — last direction)
+	; === Dir 3 (down) ===
+	ld a, (ix+3)
 	cp 255
 	jr z, bfs_il_s3
-	ld e, a
-	ld d, 0
-	ld hl, _vis
+	ld c, a
+	ld l, c
+	ld h, 0
+	ld de, _vis
 	add hl, de
 	ld a, (hl)
 	or a
 	jr nz, bfs_il_s3
+	ld a, (_bfs_mode_g)
+	cp 1
+	jr z, bfs_il_p3
 	ld (hl), 4
-	ld c, e
+	jr bfs_il_e3
+.bfs_il_p3
+	ld a, (_bfs_adj_ptr_g)
+	ld (hl), a
+.bfs_il_e3
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
@@ -1196,24 +1252,51 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 	jp bfs_il_loop
 
 .bfs_il_found
-	; C = ci = efi — read vis[efi] as result
-	ld l, c
-	ld h, 0
-	ld de, _vis
-	add hl, de
-	ld a, (hl)
+	ld a, (_bfs_mode_g)
+	cp 1
+	jr nz, bfs_il_nosave
+	ld a, c
+	ld (_demo_target), a
+.bfs_il_nosave
+	ld a, (_bfs_adj_ptr_g)
 	ld (_bfs_result_g), a
 
 .bfs_il_end
 	pop ix
 #endasm
+}
 
-	/* Cleanup: zero visited entries */
-	{
-		unsigned char i;
-		for (i = 0; i != bfs_tail_g; ++i)
-			vis[stk[i]] = 0;
-	}
+/* Zero vis[] entries that were set during the last BFS run */
+void bfs_cleanup()
+{
+	static unsigned char i;
+	for (i = 0; i != bfs_tail_g; ++i)
+		vis[stk[i]] = 0;
+}
+
+/* BFS on maze cell grid. Enemy pathfinding.
+   Returns: 0=left,1=right,2=up,3=down, -1=no path */
+char enemy_bfs(unsigned char exx, unsigned char eyy)
+{
+	static unsigned char ecx, ecy, pcx, pcy;
+	static unsigned char ci;
+	static unsigned char d;
+
+	ecx = exx >> 1;  ecy = eyy >> 1;
+	pcx = px >> 1;   pcy = py >> 1;
+
+	bfs_efi_g = row_x_cols[ecy] + ecx;
+	bfs_mode_g = 0;
+
+	bfs_head_g = 0;
+	bfs_tail_g = 1;
+	ci = row_x_cols[pcy] + pcx;
+	stk[0] = ci;
+	vis[ci] = 5;
+	bfs_result_g = 255;
+
+	bfs_run_common();
+	bfs_cleanup();
 
 	d = bfs_result_g;
 	if (d == 255) return -1;
@@ -1749,6 +1832,55 @@ void draw_menu()
 	gotoxy(center_x(len), 22); printf(txt_buffer);
 }
 
+/* Nav map: precomputed direction toward target for each cell */
+
+/* Demo AI — BFS to nearest coin or exit, cache one direction.
+   Reuses vis[]/stk[]/bfs_run_common — cleaned up before return. */
+char demo_ai_dir()
+{
+	static unsigned char pi, nv, tc;
+
+	if (!(px & 1) || !(py & 1)) return pdir;
+
+	if (nav_valid) return nav_valid - 1;  /* cached: 1-4 = dir 0-3 */
+
+	/* Find target cell */
+	if (exit_open) {
+		tc = row_x_cols[exit_gy >> 1] + (exit_gx >> 1);
+	} else {
+		for (tc = 0; tc != ROWS * COLS; ++tc)
+			if (coinmap[tc]) break;
+		if (tc >= ROWS * COLS) return -1;  /* no coins left */
+	}
+
+	pi = row_x_cols[py >> 1] + (px >> 1);
+	if (tc == pi) return -1;  /* at target */
+
+	/* BFS from target using shared asm BFS */
+	vis[tc] = 5;
+	stk[0] = tc;
+	bfs_head_g = 0;
+	bfs_tail_g = 1;
+	bfs_efi_g = 254;   /* no search target */
+	bfs_mode_g = 2;     /* fixed vis + no depth limit */
+	bfs_result_g = 255;
+	bfs_run_common();
+
+	nv = vis[pi];
+	bfs_cleanup();
+
+	if (nv == 0 || nv == 5) return -1;
+	nv = (nv - 1) ^ 1;  /* reverse direction toward target */
+
+	/* Momentum: prefer current direction if passable and not reversing */
+	if (adj[(int)pi * 4 + pdir] != 255 && nv != (pdir ^ 1)) {
+		nv = pdir;
+	}
+
+	nav_valid = nv + 1;  /* cache: 1-4 */
+	return nv;
+}
+
 /* Frame-based timing (1 frame = 20ms at 50Hz) */
 #define KEY_REPEAT    4   /* held key repeats every 4 frames = 80ms */
 
@@ -1863,6 +1995,7 @@ main()
 
 	/* Difficulty selection (first pick also seeds RNG) */
 	while (1) {
+		demo_mode = 0;
 		/* Clear screen directly — avoids SP1/console driver conflicts */
 		memset((unsigned char *)16384u, 0, 6144u);
 		memset((unsigned char *)22528u, INK_WHITE | PAPER_BLACK, 768u);
@@ -1879,11 +2012,15 @@ main()
 		   floating bus (Kempston) or held buttons at startup. */
 		{
 			static unsigned char joy_k, joy_s, prev_k, prev_s;
+			static unsigned int demo_timer;
 			prev_k = (unsigned char)in_JoyKempston() & in_FIRE;
 			prev_s = (unsigned char)in_JoySinclair1() & in_FIRE;
+			demo_timer = 0;
 			while (1) {
+				intrinsic_halt();
 				rseed++;
 				k = in_Inkey();
+				if (k) demo_timer = 0; else demo_timer++;
 				joy_k = (unsigned char)in_JoyKempston() & in_FIRE;
 				joy_s = (unsigned char)in_JoySinclair1() & in_FIRE;
 				if (k == 'q') {
@@ -1905,12 +2042,21 @@ main()
 				} else if (joy_s && !prev_s) {
 					joy_type = 2;
 					break;
+				} else if (demo_timer >= 500) {
+					demo_mode = 250;  /* grace frames before accepting keys */
+					demo_target = 255;
+					nav_valid = 0;
+					joy_type = 0;
+					break;
 				}
 				prev_k = joy_k;
 				prev_s = joy_s;
 			}
 		}
-		difficulty = diff_cursor + 1;
+		if (demo_mode)
+			difficulty = 1;
+		else
+			difficulty = diff_cursor + 1;
 		wait_key_release();
 		if (rseed == 0) rseed = 42;
 		srand(rseed);
@@ -1991,7 +2137,9 @@ main()
 			dname = (difficulty == 1) ? "Easy" :
 			        (difficulty == 2) ? "Normal" :
 			        (difficulty == 3) ? "Hard" : "Nightmare";
-			{
+			if (demo_mode)
+				len = sprintf(txt_buffer, "--- DEMO ---");
+			else {
 				len = sprintf(txt_buffer, "Lv%d [%s]", level, dname);
 			}
 			gotoxy(center_x(len), 23); printf(txt_buffer);
@@ -2020,7 +2168,7 @@ main()
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		panim = 0;
-		pdir = 1;  /* default facing right */
+		pdir = 3;  /* default facing down (DEBUG) */
 		{
 			unsigned char ei;
 			for (ei = 0; ei != num_enemies; ++ei) {
@@ -2037,7 +2185,7 @@ main()
 		coins_needed = (total_coins + 1) / 2;  /* need half the coins */
 		exit_open = 0;
 		sp1_set_spr_colour(spr_exit_s, EXIT_LOCKED_ATTR);
-		place_gun();
+		if (demo_mode) { gun_placed = 0; has_gun = 0; } else place_gun();
 		draw_exit(exit_gx, exit_gy);
 		{
 			static unsigned char ei;
@@ -2051,10 +2199,20 @@ main()
 		show_score();
 		set_row_attr(23, INK_WHITE | PAPER_BLACK);
 		fix_row0_attrs();
-		level_intro();
+		if (demo_mode) {
+			set_print_attr(BRIGHT | INK_YELLOW | PAPER_BLACK);
+			gotoxy(0, 0); printf("DEMO");
+		} else
+			level_intro();
 
 		while (1) {
 			intrinsic_halt();  /* sync to 50Hz frame (IM2 null ISR — safe) */
+
+			/* Demo mode: any key exits back to menu (grace period first) */
+			if (demo_mode) {
+				if (demo_mode > 1) demo_mode--;
+				else if (in_Inkey()) { game_over = 1; break; }
+			}
 
 			/* --- Player pixel-scrolling movement --- */
 			if (panim > 0) {
@@ -2066,7 +2224,7 @@ main()
 
 				/* Corner tolerance: when 3px from destination,
 				   allow perpendicular turn by snapping early */
-				if (panim == 2) {
+				if (panim == 2 && !demo_mode) {
 					k = read_joy();
 					if (k) {
 						dx = 0; dy = 0;
@@ -2110,6 +2268,7 @@ main()
 					py += dir_dy[pdir];
 					ppx = px * 8;
 					ppy = py * 8;
+					if (demo_mode) nav_valid = 0;  /* recalc at new cell */
 
 				snap_done:
 					/* Collect coin? */
@@ -2157,6 +2316,7 @@ main()
 					}
 
 					if (exit_open && px == exit_gx && py == exit_gy) {
+						if (demo_mode) { game_over = 1; break; }
 						score += 50 + timer_sec;
 						render_spr_pix(spr_player, framebuf_player,
 						               gfx_player, ppx, ppy);
@@ -2171,6 +2331,11 @@ main()
 			if (panim == 0) {
 				/* Accept new input */
 				dx = 0; dy = 0;
+				if (demo_mode) {
+					k = demo_ai_dir();
+					if (k < 0) k = enemy_random_dir(px, py);
+					if (k >= 0) { dx = dir_dx[k]; dy = dir_dy[k]; }
+				} else {
 				k = read_joy();
 				/* Fire gun: space bar, takes priority over movement */
 				if (has_gun && (k & in_FIRE)) {
@@ -2182,6 +2347,8 @@ main()
 					if (k & in_UP)    dy = -1;
 					if (k & in_DOWN)  dy = 1;
 				}
+				} /* end else (not firing) */
+				} /* end !demo_mode */
 				/* Only one axis at a time — prevent diagonal wall skip */
 				if (dx && dy) dy = 0;
 				if ((dx || dy) && can_move(dx, dy)) {
@@ -2197,7 +2364,6 @@ main()
 				} else if (dx || dy) {
 					snd_bump();
 				}
-				} /* end else (not firing) */
 			}
 
 			/* Render player at current pixel position */
@@ -2240,6 +2406,7 @@ main()
 				/* Coins impossible? Game over if can't reach threshold */
 				if (!exit_open &&
 				    coins_collected + coins_left < coins_needed) {
+					if (demo_mode) { game_over = 1; break; }
 					sp1_UpdateNow();
 					loss_cut_scene("** ENEMIES ATE TOO MANY COINS! **", 1);
 					wait_any_key();
@@ -2280,6 +2447,7 @@ main()
 					if (timer_sec == 10)
 						zx_border(INK_RED);
 					if (timer_sec == 0) {
+						if (demo_mode) { game_over = 1; break; }
 						loss_cut_scene("** TIME UP! **", 0);
 						wait_any_key();
 						rank = update_hiscores();
@@ -2293,6 +2461,7 @@ main()
 			}
 
 			if (caught) {
+				if (demo_mode) { game_over = 1; break; }
 				loss_cut_scene("** CAUGHT! **", 0);
 				wait_any_key();
 				rank = update_hiscores();

@@ -10,10 +10,6 @@ A playable maze game with brick-textured walls, colour attributes, and sound eff
 
 **Controls:** O/P = left/right, Q/A = up/down
 
-### Calendar (`calendar.c`)
-
-Displays a monthly calendar for any given year and month, with decorative pixel-art borders (diamond patterns, corner crosses, double-line frame).
-
 ## Building
 
 Requires [z88dk](https://z88dk.org/) installed.
@@ -21,9 +17,6 @@ Requires [z88dk](https://z88dk.org/) installed.
 ```sh
 # Maze game
 zcc +zx -vn -o out/maze.bin maze.c -lndos -create-app
-
-# Calendar
-zcc +zx -vn -o out/calendar.bin calendar.c -lndos -create-app
 ```
 
 This produces `.tap` files in the `out/` directory, loadable in any ZX Spectrum emulator (e.g. Fuse, ZXSpin).
@@ -60,13 +53,17 @@ Build/run cycle:
 # bugs:
 - sometimes player walks through enemy, still
 - time pretends to be in seconds but ticks slower - show just a counter then?
+- starting game (keypress after selecting difficulty) is not very responsive
+- make masks one pixel wider
+- make "edge"/"shadow" on coin
+- make exit sprite one pixel smaller
 
 # features:
 + speed up enemies with level?
 - web emul
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music
-- demo mode
++- demo mode (has bug with wobbly movement)
 - player figure -> man with several movement phases
 + use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
 +// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
