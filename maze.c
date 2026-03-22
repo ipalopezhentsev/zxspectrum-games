@@ -77,15 +77,15 @@ unsigned char joy_type;    /* 0=keyboard, 1=kempston, 2=sinclair */
 unsigned char menu_cursor; /* 0-3=difficulty */
 unsigned char diff_cursor; /* 0-3: last selected difficulty item */
 
-/* Coin map: 1=coin present at maze cell (cx,cy). Index = cy*COLS+cx */
-unsigned char coinmap[ROWS * COLS];
+/* Gem map: 1=gem present at maze cell (cx,cy). Index = cy*COLS+cx */
+unsigned char gemmap[ROWS * COLS];
 uint score;
-unsigned char coins_left;
-unsigned char coins_collected;
-unsigned char coins_needed;   /* min coins to open exit */
-unsigned char total_coins;
+unsigned char gems_left;
+unsigned char gems_collected;
+unsigned char gems_needed;   /* min gems to open exit */
+unsigned char total_gems;
 unsigned char exit_open;      /* 1 = exit unlocked */
-unsigned char hud_dirty;      /* 1 = redraw coins/score HUD after sp1_UpdateNow */
+unsigned char hud_dirty;      /* 1 = redraw gems/score HUD after sp1_UpdateNow */
 unsigned char level;
 unsigned char difficulty;    /* 1=Easy, 2=Normal, 3=Hard, 4=Nightmare */
 unsigned char demo_mode;
@@ -129,7 +129,7 @@ void *u_malloc(uint size) { return malloc(size); }
 void u_free(void *addr) { free(addr); }
 
 /* Forward declarations */
-void show_coins_hud();
+void show_gems_hud();
 void open_exit_gate();
 
 /* SP1 sprite handles */
@@ -172,7 +172,7 @@ unsigned char bfs_tail_g;
 unsigned char bfs_result_g;
 unsigned int bfs_adj_ptr_g;
 unsigned char bfs_mode_g;  /* 0=fixed direction (enemy), 1=propagate (demo) */
-unsigned char demo_target;   /* sticky coin target cell (255=none) */
+unsigned char demo_target;   /* sticky gem target cell (255=none) */
 
 #define ATTR_P_ADDR 23693
 #define WALL_ATTR   (BRIGHT | INK_RED | PAPER_YELLOW)
@@ -184,7 +184,7 @@ unsigned char demo_target;   /* sticky coin target cell (255=none) */
 #define ENEMY4_ATTR (BRIGHT | INK_WHITE | PAPER_BLACK)
 #define EXIT_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define EXIT_LOCKED_ATTR (INK_RED | PAPER_BLACK)
-#define COIN_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
+#define GEM_ATTR   (BRIGHT | INK_YELLOW | PAPER_BLACK)
 #define TITLE_ATTR  (BRIGHT | INK_YELLOW | PAPER_BLUE)
 #define WIN_ATTR    (BRIGHT | INK_GREEN | PAPER_BLACK)
 #define HISCORE_ATTR (BRIGHT | INK_YELLOW | PAPER_BLACK)
@@ -219,10 +219,10 @@ const unsigned char brick[8] = {
 	0b00000000
 };
 
-const unsigned char spr_coin[8] = {
+const unsigned char spr_gem[8] = {
 	0b00000000,
 	0b00111100,
-	0b01111110,
+	0b01101110,
 	0b01111110,
 	0b00111100,
 	0b00111100,
@@ -547,7 +547,7 @@ void snd_caught()
 	intrinsic_ei();
 }
 
-void snd_coin()
+void snd_gem()
 {
 	if (demo_mode) return;
 	bit_beep(1, 200);
@@ -564,7 +564,7 @@ void snd_exit_open()
 	intrinsic_ei();
 }
 
-void snd_coins_lost()
+void snd_gems_lost()
 {
 	bit_beep(15, 800);
 	intrinsic_ei();
@@ -641,12 +641,12 @@ void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
 	               epx[sn], epy[sn]);
 }
 
-void draw_coin(unsigned char cx, unsigned char cy)
+void draw_gem(unsigned char cx, unsigned char cy)
 {
 	unsigned char gx, gy;
 	gx = (cx << 1) + 1;
 	gy = (cy << 1) + 1;
-	sp1_PrintAtInv(SROW(gy), SCOL(gx), COIN_ATTR, 'C');
+	sp1_PrintAtInv(SROW(gy), SCOL(gx), GEM_ATTR, 'C');
 }
 
 /* Check if any enemy occupies expanded grid position (gx, gy) */
@@ -658,31 +658,31 @@ unsigned char is_enemy_at(unsigned char gx, unsigned char gy)
 	return 0;
 }
 
-/* Place exactly target coins on maze cells.
-   Pass 1: spaced placement (no adjacent coins, avoid entities).
+/* Place exactly target gems on maze cells.
+   Pass 1: spaced placement (no adjacent gems, avoid entities).
    Pass 2: fill remaining in any free corridor cell. */
-void place_coins()
+void place_gems()
 {
 	static unsigned char target, idx, cx, cy, gx, gy;
 	static int attempts;
-	coins_left = 0;
-	memset(coinmap, 0, ROWS * COLS);
+	gems_left = 0;
+	memset(gemmap, 0, ROWS * COLS);
 
-#ifdef DEBUG_ONE_COIN
-	/* Debug: single coin at bottom-right corner */
+#ifdef DEBUG_ONE_GEM
+	/* Debug: single gem at bottom-right corner */
 	idx = ROWS * COLS - 1;
-	coinmap[idx] = 1;
-	coins_left = 1;
-	draw_coin(COLS - 1, ROWS - 1);
+	gemmap[idx] = 1;
+	gems_left = 1;
+	draw_gem(COLS - 1, ROWS - 1);
 #else
 	target = (ROWS * COLS) * 2 / 5;
 
 	/* Pass 1: place with spacing constraint */
 	attempts = 1000;
-	while (coins_left < target && attempts > 0) {
+	while (gems_left < target && attempts > 0) {
 		attempts--;
 		idx = rand() % (ROWS * COLS);
-		if (coinmap[idx]) continue;
+		if (gemmap[idx]) continue;
 		cy = idx / COLS;
 		cx = idx - cy * COLS;
 		gx = cx * 2 + 1;
@@ -690,21 +690,21 @@ void place_coins()
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
 		if (is_enemy_at(gx, gy)) continue;
-		if (cx > 0 && coinmap[idx - 1]) continue;
-		if (cx < COLS - 1 && coinmap[idx + 1]) continue;
-		if (cy > 0 && coinmap[idx - COLS]) continue;
-		if (cy < ROWS - 1 && coinmap[idx + COLS]) continue;
-		coinmap[idx] = 1;
-		coins_left++;
-		draw_coin(cx, cy);
+		if (cx > 0 && gemmap[idx - 1]) continue;
+		if (cx < COLS - 1 && gemmap[idx + 1]) continue;
+		if (cy > 0 && gemmap[idx - COLS]) continue;
+		if (cy < ROWS - 1 && gemmap[idx + COLS]) continue;
+		gemmap[idx] = 1;
+		gems_left++;
+		draw_gem(cx, cy);
 	}
 
 	/* Pass 2: relax spacing — fill any free corridor cell */
 	attempts = 1000;
-	while (coins_left < target && attempts > 0) {
+	while (gems_left < target && attempts > 0) {
 		attempts--;
 		idx = rand() % (ROWS * COLS);
-		if (coinmap[idx]) continue;
+		if (gemmap[idx]) continue;
 		cy = idx / COLS;
 		cx = idx - cy * COLS;
 		gx = cx * 2 + 1;
@@ -712,9 +712,9 @@ void place_coins()
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
 		if (is_enemy_at(gx, gy)) continue;
-		coinmap[idx] = 1;
-		coins_left++;
-		draw_coin(cx, cy);
+		gemmap[idx] = 1;
+		gems_left++;
+		draw_gem(cx, cy);
 	}
 #endif
 }
@@ -735,8 +735,8 @@ void place_gun()
 		if (gx == px && gy == py) continue;
 		if (gx == exit_gx && gy == exit_gy) continue;
 		if (is_enemy_at(gx, gy)) continue;
-		/* Avoid placing on a coin */
-		if (coinmap[cy * COLS + cx]) continue;
+		/* Avoid placing on a gem */
+		if (gemmap[cy * COLS + cx]) continue;
 		gun_gx = gx;
 		gun_gy = gy;
 		gun_placed = 1;
@@ -745,24 +745,24 @@ void place_gun()
 	}
 }
 
-/* Check and collect coin at expanded grid position (gx,gy) */
-unsigned char try_collect_coin(unsigned char gx, unsigned char gy)
+/* Check and collect gem at expanded grid position (gx,gy) */
+unsigned char try_collect_gem(unsigned char gx, unsigned char gy)
 {
 	unsigned char cx, cy;
 	if (!(gx & 1) || !(gy & 1)) return 0;  /* not a cell center */
 	cx = gx >> 1;
 	cy = gy >> 1;
 	unsigned char idx=row_x_cols[cy] + cx;
-	if (coinmap[idx]) {
-		coinmap[idx] = 0;
-		coins_left--;
-		coins_collected++;
+	if (gemmap[idx]) {
+		gemmap[idx] = 0;
+		gems_left--;
+		gems_collected++;
 		score += 10;
-		/* Remove coin tile — SP1 will restore corridor background */
+		/* Remove gem tile — SP1 will restore corridor background */
 		sp1_PrintAtInv(SROW(gy), SCOL(gx), CORR_ATTR, 'F');
 		hud_dirty = 1;
 		/* Check if we just hit the threshold to open the exit */
-		if (!exit_open && coins_collected >= coins_needed)
+		if (!exit_open && gems_collected >= gems_needed)
 			open_exit_gate();
 		if (demo_mode) nav_valid = 0;  /* recalculate path */
 		return 1;
@@ -795,8 +795,8 @@ void set_row_attr(unsigned char row, unsigned char attr)
 #define SCORE_NUM_X    32  /* 6-digit number starts here */
 #define TIMER_LABEL_X  27  /* "TIME " starts here (row 0) */
 #define TIMER_NUM_X    32  /* "d:dd" starts here */
-#define COINS_LABEL_X  38  /* "COINS TO GO" starts here (row 0) */
-#define COINS_NUM_X    50  /* 2-digit number starts here */
+#define GEMS_LABEL_X  38  /* "GEMS TO GO" starts here (row 0) */
+#define GEMS_NUM_X    50  /* 2-digit number starts here */
 
 /* Print all static HUD labels — call once at level start */
 void draw_hud_labels()
@@ -808,7 +808,7 @@ void draw_hud_labels()
 	gotoxy(TIMER_LABEL_X, 0); printf("TIME");
 
 	set_print_attr(INK_WHITE | PAPER_BLACK);
-	gotoxy(COINS_LABEL_X, 0); printf("COINS TO GO");
+	gotoxy(GEMS_LABEL_X, 0); printf("GEMS TO GO");
 }
 
 /* Update score number only (row 22) */
@@ -855,17 +855,17 @@ void show_gun_hud()
 	set_print_attr(INK_WHITE | PAPER_BLACK);
 }
 
-/* Update coins remaining digits only (row 0) — also restores attr */
-void show_coins_hud()
+/* Update gems remaining digits only (row 0) — also restores attr */
+void show_gems_hud()
 {
 	static unsigned char attr, remain;
-	remain = (coins_collected >= coins_needed) ? 0 :
-	         coins_needed - coins_collected;
+	remain = (gems_collected >= gems_needed) ? 0 :
+	         gems_needed - gems_collected;
 	attr = exit_open ? (BRIGHT | INK_GREEN | PAPER_BLACK) :
 	                   (INK_RED | PAPER_BLACK);
 	set_print_attr(attr);
 	sprintf(txt_buffer, "%02d", remain);
-	gotoxy(COINS_NUM_X, 0); printf(txt_buffer);
+	gotoxy(GEMS_NUM_X, 0); printf(txt_buffer);
 }
 
 /* Fix all row-0 attrs: clear to black, then reapply coloured sections */
@@ -874,7 +874,7 @@ void fix_row0_attrs()
 	set_row_attr(0, INK_WHITE | PAPER_BLACK);
 	show_gun_hud();
 	show_timer();
-	show_coins_hud();
+	show_gems_hud();
 }
 
 /* Unlock the exit: change sprite colour, play sound, update HUD */
@@ -1045,7 +1045,7 @@ void build_adj()
 /* Shared BFS core. Caller sets up vis[], stk[], bfs globals before calling.
    bfs_mode_g=0: fixed direction vis (enemy), depth limit 40
    bfs_mode_g=1: propagate vis[ci] (demo), no depth limit
-   bfs_efi_g=255: search coinmap[ci]!=0, else: search ci==bfs_efi_g */
+   bfs_efi_g=255: search gemmap[ci]!=0, else: search ci==bfs_efi_g */
 void bfs_run_common()
 {
 	static unsigned char i;
@@ -1089,16 +1089,16 @@ void bfs_run_common()
 	; --- Check target ---
 	ld a, (_bfs_efi_g)
 	cp 255
-	jr z, bfs_il_coinchk
+	jr z, bfs_il_gemchk
 	; Single target mode: ci == efi?
 	cp c
 	jp z, bfs_il_found
 	jr bfs_il_expand
-.bfs_il_coinchk
-	; Coin search mode: coinmap[ci] != 0?
+.bfs_il_gemchk
+	; Gem search mode: gemmap[ci] != 0?
 	ld l, c
 	ld h, 0
-	ld de, _coinmap
+	ld de, _gemmap
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1398,7 +1398,7 @@ void start_enemy_move(unsigned char n, char dir)
 }
 
 /* Advance enemy n's animation by one frame.
-   When animation completes, updates grid position and checks coins. */
+   When animation completes, updates grid position and checks gems. */
 void advance_enemy_anim(unsigned char n)
 {
 	static unsigned char sn, d;
@@ -1419,14 +1419,14 @@ void advance_enemy_anim(unsigned char n)
 		epx[sn] = enx[sn] * 8;
 		epy[sn] = eny[sn] * 8;
 
-		/* Enemy eats coin if it lands on one */
+		/* Enemy eats gem if it lands on one */
 		if ((enx[sn] & 1) && (eny[sn] & 1)) {
 			unsigned char ccx, ccy;
 			ccx = enx[sn] >> 1;
 			ccy = eny[sn] >> 1;
-			if (coinmap[ccy * COLS + ccx]) {
-				coinmap[ccy * COLS + ccx] = 0;
-				coins_left--;
+			if (gemmap[ccy * COLS + ccx]) {
+				gemmap[ccy * COLS + ccx] = 0;
+				gems_left--;
 				sp1_PrintAtInv(SROW(eny[sn]), SCOL(enx[sn]), CORR_ATTR, 'F');
 				hud_dirty = 1;
 			}
@@ -1511,12 +1511,12 @@ void win_cut_scene()
 	popup_fix_attrs(BRIGHT | INK_BLACK | PAPER_GREEN);
 }
 
-/* Generic loss cut-scene: snd_type 0=caught, 1=coins_lost */
+/* Generic loss cut-scene: snd_type 0=caught, 1=gems_lost */
 void loss_cut_scene(char *title, unsigned char snd_type)
 {
 	static unsigned char len;
 	zx_border(INK_RED);
-	if (snd_type) snd_coins_lost();
+	if (snd_type) snd_gems_lost();
 	else snd_caught();
 	zx_border(INK_BLACK);
 	draw_popup_bg(
@@ -1541,7 +1541,7 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 	gy = r - MAZE_R0;
 	gx = c - MAZE_C0;
 	if (wallmap[(unsigned int)gy * ECOLS + gx]) return WALL_ATTR;
-	/* Entity positions — checked before coins so sprites stay coloured */
+	/* Entity positions — checked before gems so sprites stay coloured */
 	if (gx == exit_gx && gy == exit_gy) return exit_open ? EXIT_ATTR : EXIT_LOCKED_ATTR;
 	if (gx == px && gy == py) return PLAYER_ATTR;
 	{
@@ -1552,9 +1552,9 @@ unsigned char maze_attr_at(unsigned char r, unsigned char c)
 	}
 	/* Gun pickup */
 	if (gun_placed && gx == gun_gx && gy == gun_gy) return GUN_ATTR;
-	/* Coin cells sit at odd expanded-grid positions (maze cell centres) */
-	if ((gx & 1) && (gy & 1) && coinmap[(unsigned int)(gy >> 1) * COLS + (gx >> 1)])
-		return COIN_ATTR;
+	/* Gem cells sit at odd expanded-grid positions (maze cell centres) */
+	if ((gx & 1) && (gy & 1) && gemmap[(unsigned int)(gy >> 1) * COLS + (gx >> 1)])
+		return GEM_ATTR;
 	return CORR_ATTR;
 }
 
@@ -1783,7 +1783,7 @@ void draw_menu()
 	/* Main Cast — render SP1 tile icons first, then text on top */
 	sp1_PrintAtInv(14, 7, PLAYER_ATTR, 'P');
 	sp1_PrintAtInv(15, 7, ENEMY_ATTR, 'E');
-	sp1_PrintAtInv(16, 7, COIN_ATTR, 'C');
+	sp1_PrintAtInv(16, 7, GEM_ATTR, 'C');
 	sp1_PrintAtInv(17, 7, EXIT_LOCKED_ATTR, 'X');
 	sp1_PrintAtInv(18, 7, GUN_ATTR, 'G');
 	sp1_PrintAtInv(19, 7, WALL_ATTR, 'B');
@@ -1799,10 +1799,10 @@ void draw_menu()
 	gotoxy(18, 14); printf("YOU    Escape the maze alive!");
 
 	zx_setink(INK_RED);
-	gotoxy(18, 15); printf("GHOST  Hunts you & steals coins");
+	gotoxy(18, 15); printf("GHOST  Hunts you & steals gems");
 
 	zx_setink(INK_YELLOW);
-	gotoxy(18, 16); printf("COIN   Grab enough to open exit");
+	gotoxy(18, 16); printf("GEM    Grab enough to open exit");
 
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
 	zx_setink(INK_RED);
@@ -1824,7 +1824,7 @@ void draw_menu()
 
 /* Nav map: precomputed direction toward target for each cell */
 
-/* Demo AI — BFS to nearest coin or exit, cache one direction.
+/* Demo AI — BFS to nearest gem or exit, cache one direction.
    Reuses vis[]/stk[]/bfs_run_common — cleaned up before return. */
 char demo_ai_dir()
 {
@@ -1839,8 +1839,8 @@ char demo_ai_dir()
 		tc = row_x_cols[exit_gy >> 1] + (exit_gx >> 1);
 	} else {
 		for (tc = 0; tc != ROWS * COLS; ++tc)
-			if (coinmap[tc]) break;
-		if (tc >= ROWS * COLS) return -1;  /* no coins left */
+			if (gemmap[tc]) break;
+		if (tc >= ROWS * COLS) return -1;  /* no gems left */
 	}
 
 	pi = row_x_cols[py >> 1] + (px >> 1);
@@ -1928,7 +1928,7 @@ main()
 	sp1_Initialize(SP1_IFLAG_OVERWRITE_TILES | SP1_IFLAG_OVERWRITE_DFILE,
 		CORR_ATTR, 'F');
 	sp1_TileEntry('B', brick);
-	sp1_TileEntry('C', spr_coin);
+	sp1_TileEntry('C', spr_gem);
 	sp1_TileEntry('F', floor_tile);
 	sp1_TileEntry('G', spr_gun);
 	sp1_TileEntry('P', gfx_player);
@@ -2162,11 +2162,11 @@ main()
 			}
 		}
 
-		/* Place coins, gun, and draw everything */
-		place_coins();
-		coins_collected = 0;
-		total_coins = coins_left;
-		coins_needed = (total_coins + 1) / 2;  /* need half the coins */
+		/* Place gems, gun, and draw everything */
+		place_gems();
+		gems_collected = 0;
+		total_gems = gems_left;
+		gems_needed = (total_gems + 1) / 2;  /* need half the gems */
 		exit_open = 0;
 		if (demo_mode) { gun_placed = 0; has_gun = 0; } else place_gun();
 		draw_exit(exit_gx, exit_gy);
@@ -2254,10 +2254,10 @@ main()
 					if (demo_mode) nav_valid = 0;  /* recalc at new cell */
 
 				snap_done:
-					/* Collect coin? */
-					if (try_collect_coin(px, py)) {
+					/* Collect gem? */
+					if (try_collect_gem(px, py)) {
 						zx_border(INK_YELLOW);
-						snd_coin();
+						snd_gem();
 						zx_border(INK_BLACK);
 					}
 
@@ -2386,12 +2386,12 @@ main()
 					               gfx_enemy, msk_enemy, epx[ei], epy[ei]);
 				}
 
-				/* Coins impossible? Game over if can't reach threshold */
+				/* Gems impossible? Game over if can't reach threshold */
 				if (!exit_open &&
-				    coins_collected + coins_left < coins_needed) {
+				    gems_collected + gems_left < gems_needed) {
 					if (demo_mode) { game_over = 1; break; }
 					sp1_UpdateNow();
-					loss_cut_scene("** ENEMIES ATE TOO MANY COINS! **", 1);
+					loss_cut_scene("** ENEMIES ATE TOO MANY GEMS! **", 1);
 					wait_any_key();
 					rank = update_hiscores();
 					show_hiscores(rank);
@@ -2402,7 +2402,7 @@ main()
 				}
 			}
 
-			/* Update coins HUD in SP1 buffer before render */
+			/* Update gems HUD in SP1 buffer before render */
 			/* --- Render all SP1 changes this frame --- */
 			sp1_UpdateNow();
 
@@ -2410,7 +2410,7 @@ main()
 			if (hud_dirty) {
 				hud_dirty = 0;
 				show_score();
-				show_coins_hud();
+				show_gems_hud();
 			}
 
 			/* --- Timer countdown --- */
