@@ -51,8 +51,10 @@ unsigned char epx[4], epy[4];   /* enemy pixel positions */
 /* Animation state: 0=at grid boundary, >0=frames remaining */
 unsigned char panim;
 unsigned char pdir;              /* player animation direction (0-3) */
+unsigned char pwalk;             /* walk phase: 0=stand, 1=walk */
 unsigned char eanim[4];          /* enemy animation counters */
 unsigned char edir_anim[4];     /* enemy animation directions */
+unsigned char ewalk[4];         /* enemy walk phase: 0/1 */
 
 #define MOVE_SPEED 2
 #define ANIM_FRAMES 4
@@ -160,8 +162,10 @@ unsigned char row_x_cols[ROWS];
 unsigned int erow_x_ecols[EROWS];
 
 /* Precomputed adjacency for BFS: 4 neighbors per cell (L,R,U,D).
-   255 = wall or boundary. Built once after maze generation. */
-unsigned char adj[ROWS * COLS * 4];
+   255 = wall or boundary. Built once after maze generation.
+   Placed at fixed address in upper memory (above SP1 heap sprite
+   allocations) to keep BSS below $D000. 504 bytes at $F600-$F7F7. */
+#define adj ((unsigned char *)0xF600u)
 
 unsigned char nav_valid;  /* 0=need BFS, 1-4=cached dir+1 */
 
@@ -255,13 +259,60 @@ const unsigned char floor_tile[8] = {
 };
 
 /* Raw 8-byte graphics for frame generation (pixel scrolling) */
-const unsigned char gfx_player[8] = {0x00, 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0x00};
+/* Player man sprites: 6 variants (front/right/left × stand/walk) */
+const unsigned char gfx_man_front1[8] = {0x18,0x18,0x3C,0x18,0x18,0x18,0x24,0x00}; /* front stand */
+const unsigned char gfx_man_front2[8] = {0x18,0x18,0x3C,0x18,0x18,0x24,0x24,0x00}; /* front walk */
+const unsigned char gfx_man_right1[8] = {0x18,0x18,0x1E,0x30,0x18,0x18,0x24,0x00}; /* right stand */
+const unsigned char gfx_man_right2[8] = {0x18,0x18,0x1E,0x30,0x18,0x24,0x42,0x00}; /* right walk */
+const unsigned char gfx_man_left1[8]  = {0x18,0x18,0x78,0x0C,0x18,0x18,0x24,0x00}; /* left stand */
+const unsigned char gfx_man_left2[8]  = {0x18,0x18,0x78,0x0C,0x18,0x24,0x42,0x00}; /* left walk */
+
+const unsigned char msk_man_front1[8] = {0x3C,0x7E,0x7E,0x7E,0x3C,0x7E,0x7E,0x7E};
+const unsigned char msk_man_front2[8] = {0x3C,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E};
+const unsigned char msk_man_right1[8] = {0x3C,0x3F,0x7F,0x7F,0x7C,0x7E,0x7E,0x7E};
+const unsigned char msk_man_right2[8] = {0x3C,0x3F,0x7F,0x7F,0x7E,0xFF,0xFF,0xE7};
+const unsigned char msk_man_left1[8]  = {0x3C,0xFC,0xFE,0xFE,0x3E,0x7E,0x7E,0x7E};
+const unsigned char msk_man_left2[8]  = {0x3C,0xFC,0xFE,0xFE,0x7E,0xFF,0xFF,0xE7};
+
+/* Current player sprite pointers — set by update_player_spr() */
+const unsigned char *cur_pgfx;
+const unsigned char *cur_pmsk;
+
+void update_player_spr()
+{
+	if (pdir == 0) {
+		if (pwalk) { cur_pgfx = gfx_man_left2;  cur_pmsk = msk_man_left2; }
+		else       { cur_pgfx = gfx_man_left1;  cur_pmsk = msk_man_left1; }
+	} else if (pdir == 1) {
+		if (pwalk) { cur_pgfx = gfx_man_right2; cur_pmsk = msk_man_right2; }
+		else       { cur_pgfx = gfx_man_right1; cur_pmsk = msk_man_right1; }
+	} else {
+		if (pwalk) { cur_pgfx = gfx_man_front2; cur_pmsk = msk_man_front2; }
+		else       { cur_pgfx = gfx_man_front1; cur_pmsk = msk_man_front1; }
+	}
+}
+
+void update_enemy_spr(unsigned char ei) __z88dk_fastcall
+{
+	unsigned char d, w;
+	d = last_edir_arr[ei];
+	w = ewalk[ei];
+	if (d == 0) {
+		if (w) { cur_pgfx = gfx_man_left2;  cur_pmsk = msk_man_left2; }
+		else   { cur_pgfx = gfx_man_left1;  cur_pmsk = msk_man_left1; }
+	} else if (d == 1) {
+		if (w) { cur_pgfx = gfx_man_right2; cur_pmsk = msk_man_right2; }
+		else   { cur_pgfx = gfx_man_right1; cur_pmsk = msk_man_right1; }
+	} else {
+		if (w) { cur_pgfx = gfx_man_front2; cur_pmsk = msk_man_front2; }
+		else   { cur_pgfx = gfx_man_front1; cur_pmsk = msk_man_front1; }
+	}
+}
+
 const unsigned char gfx_enemy[8]  = {0x00, 0x10, 0x28, 0x54, 0x28, 0x10, 0x00, 0x00};
 const unsigned char gfx_exit_tile[8] = {0x00, 0x00, 0x44, 0x28, 0x10, 0x28, 0x44, 0x00};
 
-/* Expanded masks: each row = gfx[i] | gfx[i-1] | gfx[i+1], then widened 1px
-   each side with (e | e>>1 | e<<1).  Precomputed to avoid sccz80 issues. */
-const unsigned char msk_player[8] = {0x00, 0x7C, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0x7C};
+/* Expanded masks (kept for tile entry) */
 const unsigned char msk_enemy[8]  = {0x38, 0x7C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38, 0x00};
 
 
@@ -515,7 +566,8 @@ void draw_dot(unsigned char gx, unsigned char gy)
 {
 	ppx = gx * 8;
 	ppy = gy * 8;
-	render_spr_pix(spr_player, framebuf_player, gfx_player, msk_player, ppx, ppy);
+	update_player_spr();
+	render_spr_pix(spr_player, framebuf_player, cur_pgfx, cur_pmsk, ppx, ppy);
 }
 
 void draw_exit(unsigned char gx, unsigned char gy)
@@ -655,7 +707,8 @@ void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
 	sn = n;
 	epx[sn] = gx * 8;
 	epy[sn] = gy * 8;
-	render_spr_pix(spr_enemies[sn], framebuf_enemies[sn], gfx_enemy, msk_enemy,
+	update_enemy_spr(sn);
+	render_spr_pix(spr_enemies[sn], framebuf_enemies[sn], cur_pgfx, cur_pmsk,
 	               epx[sn], epy[sn]);
 }
 
@@ -1123,7 +1176,7 @@ void bfs_run_common()
 	ld h, 0
 	add hl, hl
 	add hl, hl
-	ld de, _adj
+	ld de, $F600
 	add hl, de
 	push hl
 	pop ix                    ; IX = &adj[ci*4]
@@ -1403,6 +1456,7 @@ void start_enemy_move(unsigned char n, char dir)
 	sn = n;
 	last_edir_arr[sn] = dir;
 	edir_anim[sn] = dir;
+	ewalk[sn] ^= 1;
 	eanim[sn] = ANIM_FRAMES - 1;
 
 	/* First pixel advance */
@@ -1944,8 +1998,8 @@ main()
 	sp1_TileEntry('C', spr_gem);
 	sp1_TileEntry('F', floor_tile);
 	sp1_TileEntry('G', spr_gun);
-	sp1_TileEntry('P', gfx_player);
-	sp1_TileEntry('E', gfx_enemy);
+	sp1_TileEntry('P', gfx_man_right1);
+	sp1_TileEntry('E', gfx_man_left1);
 	sp1_TileEntry('X', gfx_exit_tile);
 
 	/* Set print attributes to white ink on black paper globally */
@@ -2171,12 +2225,14 @@ main()
 		timer_sec = time_limit;
 		timer_frac = 50;  /* 50 frames = 1 second at 50Hz */
 		panim = 0;
-		pdir = 3;  /* default facing down (DEBUG) */
+		pdir = 1;  /* default facing right */
+		pwalk = 0;
 		{
 			unsigned char ei;
 			for (ei = 0; ei != num_enemies; ++ei) {
 				last_edir_arr[ei] = 0;
 				eanim[ei] = 0;
+				ewalk[ei] = 0;
 				enemy_stun[ei] = 0;
 			}
 		}
@@ -2320,8 +2376,8 @@ main()
 					if (exit_open && px == exit_gx && py == exit_gy) {
 						if (demo_mode) { game_over = 1; break; }
 						score += 50 + timer_sec;
-						render_spr_pix(spr_player, framebuf_player,
-						               gfx_player, msk_player, ppx, ppy);
+						update_player_spr();
+						render_spr_pix(spr_player, framebuf_player, cur_pgfx, cur_pmsk, ppx, ppy);
 						sp1_UpdateNow();
 						win_cut_scene();
 						wait_any_key();
@@ -2358,6 +2414,7 @@ main()
 					else if (dx == 1) pdir = 1;
 					else if (dy == -1) pdir = 2;
 					else pdir = 3;
+					pwalk ^= 1;  /* toggle walk phase */
 					panim = ANIM_FRAMES - 1;
 					/* First pixel advance */
 					ppx += dir_dpx[pdir];
@@ -2369,8 +2426,8 @@ main()
 			}
 
 			/* Render player at current pixel position */
-			render_spr_pix(spr_player, framebuf_player,
-			               gfx_player, msk_player, ppx, ppy);
+			update_player_spr();
+			render_spr_pix(spr_player, framebuf_player, cur_pgfx, cur_pmsk, ppx, ppy);
 
 			/* --- Enemy moves: decide + animate --- */
 			{
@@ -2400,9 +2457,10 @@ main()
 						    enx[ei] == px && eny[ei] == py)
 							caught = 1;
 					}
+					update_enemy_spr(ei);
 					render_spr_pix(spr_enemies[ei],
 					               framebuf_enemies[ei],
-					               gfx_enemy, msk_enemy, epx[ei], epy[ei]);
+					               cur_pgfx, cur_pmsk, epx[ei], epy[ei]);
 				}
 
 				/* Gems impossible? Game over if can't reach threshold */
