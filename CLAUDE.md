@@ -120,10 +120,18 @@ intrinsic_ei();
 
 ### SP1 memory layout
 - Update array: $D200
+- SP1 internal vars: $D1ED-$D1FF (UPDATELISTH, PIXELBUFFER, ATTRBUFFER)
+- IM2 vector table: $D000-$D100 (257 bytes of $D1, ISR at $D1D1-$D1D3)
 - Tile array: $F000
-- Heap for sprites: `sbrk((void *)0xF200, 0x0DFE)` — rotation table area, unused with NR sprites
-- Stack: $D000 (`#pragma output STACKPTR=0xD000`)
-- BSS ends ~$CBB9
+- Heap for sprites: `sbrk((void *)0xF200, 0x0B34)` — $F200-$FD33
+- Frame buffers: $FD34-$FEFF (player + 4 enemies, 5×92 = 460 bytes, fixed addresses)
+- Stack: $D000 (`#pragma output STACKPTR=0xD000`), grows DOWN into BSS
+
+### Memory map constraints — CRITICAL
+- **BSS must stay below $D000.** The stack at $D000 grows downward into BSS. The IM2 `memset` at startup writes $D1 to $D000-$D100, trashing any BSS vars in that range. If BSS creeps above $D000, static locals in the overlap zone get corrupted — this may appear to work by luck (if those vars happen to be reassigned before use) but ANY code change shifts BSS addresses and can cause random crashes/resets
+- **After any change, check BSS_END in the map file**: build with `-m` flag, then `grep "^__BSS_END_head" out/maze.map` — the address MUST be below $D000. If it's not, move large arrays to upper memory (like frame buffers at $FD34+) to shrink BSS
+- **Large arrays go to upper memory, not BSS.** The region $FD34-$FEFF is reserved for frame buffers. The SP1 heap at $F200-$FD33 is mostly unused (~500 bytes used for sprite structs out of 2868). If you need more space, reduce the heap and place arrays in the freed region
+- **The $D000-$D1EC gap** between the IM2 table and SP1 vars is dead space (used only by the 3-byte ISR at $D1D1). Don't place anything there — the stack transiently writes into this area during deep call chains
 
 ### SP1 sprite data — no `const`
 Do NOT use `const` on SP1 sprite graphic arrays. SP1 examples never use const, and it may affect section placement causing SP1 to not find the data.
@@ -199,6 +207,7 @@ Global variables as `unsigned char` work correctly — the compiler loads/stores
 - `-O2 --opt-code-speed` enables inlined 16-bit get/set, faster unsigned char multiply, and peephole optimizations
 - Selective: `--opt-code-speed=inlineints,ucharmult` for specific speedups without full code size increase
 - **Remove debug flags** (`--c-code-in-asm`, `-Cc--gcline`) before final builds — they degrade peephole optimization
+- `#pragma define CLIB_EXIT_STACK_SIZE=0` — game never exits, so atexit() stack is wasted BSS. Set to 0
 
 #### Data types
 - **Prefer unsigned types** — unsigned comparisons are much faster on Z80 than signed

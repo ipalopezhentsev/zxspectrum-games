@@ -12,6 +12,7 @@
 
 #pragma output CRT_ORG_CODE = 0x5E00
 #pragma output STACKPTR=0xD000
+#pragma define CLIB_EXIT_STACK_SIZE=0
 
 #define TEXT_SCR_WIDTH 64
 
@@ -58,9 +59,17 @@ unsigned char edir_anim[4];     /* enemy animation directions */
 
 /* Frame buffers for pre-shifted 2-column sprites.
    Layout per buffer: 46 bytes col0 + 46 bytes col1 = 92 bytes.
-   Each column: 8 transparent + 8 content + 7 padding = 23 lines × 2 bytes. */
-unsigned char framebuf_player[92];
-unsigned char framebuf_enemies[4][92];
+   Each column: 8 transparent + 8 content + 7 padding = 23 lines × 2 bytes.
+   Placed at fixed addresses in upper memory (above SP1 heap usage at ~$F400)
+   to keep BSS below $D000. */
+#define FRAMEBUF_BASE 0xFD34u
+#define framebuf_player ((unsigned char *)FRAMEBUF_BASE)
+unsigned char *framebuf_enemies[4] = {
+	(unsigned char *)(FRAMEBUF_BASE + 92),
+	(unsigned char *)(FRAMEBUF_BASE + 184),
+	(unsigned char *)(FRAMEBUF_BASE + 276),
+	(unsigned char *)(FRAMEBUF_BASE + 368)
+};
 unsigned int rseed;
 /* User-defined keys for in_JoyKeyboard() — OPQA directions */
 struct in_UDK udk;
@@ -126,7 +135,6 @@ void open_exit_gate();
 /* SP1 sprite handles */
 struct sp1_ss *spr_player;
 struct sp1_ss *spr_enemies[4];
-struct sp1_ss *spr_exit_s;
 
 /* SP1 clipping rect for maze area — expanded for pixel scrolling overflow */
 struct sp1_Rect maze_clip = {MAZE_R0 - 1, MAZE_C0, ECOLS + 1, EROWS + 2};
@@ -211,27 +219,6 @@ const unsigned char brick[8] = {
 	0b00000000
 };
 
-/* SP1 MASK2NR sprite graphics: (mask, graphic) pairs × 8 rows.
-   Masks are 0x00 (fully opaque) so sprite overwrites background completely.
-   Overflow rows use 0xFF mask (fully transparent) to not affect adjacent cells.
-   Height=2: content row + transparent overflow row.
-   Frame pointer points past the top overflow row (data[16]). */
-
-/* Transparent overflow row: 16 bytes of (0xFF, 0x00) */
-#define SP1_TRANSPARENT_ROW \
-	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00, \
-	0xFF,0x00, 0xFF,0x00, 0xFF,0x00, 0xFF,0x00
-
-
-unsigned char sp1_exit_data[] = {
-	SP1_TRANSPARENT_ROW,
-	0x00,0x00, 0x00,0x82,
-	0x00,0x44, 0x00,0x28,
-	0x00,0x10, 0x00,0x28,
-	0x00,0x44, 0x00,0x82,
-	SP1_TRANSPARENT_ROW
-};
-unsigned char *sp1_exit_gfx = &sp1_exit_data[16];
 const unsigned char spr_coin[8] = {
 	0b00000000,
 	0b00111100,
@@ -276,7 +263,6 @@ const unsigned char gfx_exit_tile[8] = {0x00, 0x82, 0x44, 0x28, 0x10, 0x28, 0x44
    each side with (e | e>>1 | e<<1).  Precomputed to avoid sccz80 issues. */
 const unsigned char msk_player[8] = {0x00, 0x7C, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0x7C};
 const unsigned char msk_enemy[8]  = {0x38, 0x7C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38, 0x00};
-const unsigned char msk_exit_tile[8] = {0xC7, 0xEF, 0xFF, 0xFE, 0x7C, 0xFE, 0xFF, 0xEF};
 
 
 /* Set attribute for character cell (row, col).
@@ -372,7 +358,6 @@ void hide_sprites()
 	sp1_MoveSprAbs(spr_player, &maze_clip, 0, 25, 0, 0, 0);
 	for (i = 0; i != 4; ++i)
 		sp1_MoveSprAbs(spr_enemies[i], &maze_clip, 0, 25, 0, 0, 0);
-	sp1_MoveSprAbs(spr_exit_s, &maze_clip, 0, 25, 0, 0, 0);
 }
 
 /* Visited flags and explicit stack for DFS and BFS.
@@ -535,7 +520,7 @@ void draw_dot(unsigned char gx, unsigned char gy)
 
 void draw_exit(unsigned char gx, unsigned char gy)
 {
-	sp1_MoveSprAbs(spr_exit_s, &maze_clip, sp1_exit_gfx, SROW(gy), SCOL(gx), 0, 0);
+	sp1_PrintAtInv(SROW(gy), SCOL(gx), exit_open ? EXIT_ATTR : EXIT_LOCKED_ATTR, 'X');
 }
 
 void snd_step()
@@ -896,8 +881,7 @@ void fix_row0_attrs()
 void open_exit_gate()
 {
 	exit_open = 1;
-	sp1_set_spr_colour(spr_exit_s, EXIT_ATTR);
-	set_attr(MAZE_R0 + exit_gy, MAZE_C0 + exit_gx, EXIT_ATTR);
+	draw_exit(exit_gx, exit_gy);
 	sp1_UpdateNow();
 	zx_border(INK_YELLOW);
 	snd_exit_open();
@@ -1619,7 +1603,6 @@ void level_intro()
 
 	/* Hide all moving sprites — revealed one by one below */
 	sp1_MoveSprAbs(spr_player, &maze_clip, 0, 25, 0, 0, 0);
-	sp1_MoveSprAbs(spr_exit_s, &maze_clip, 0, 25, 0, 0, 0);
 	for (ei = 0; ei != 4; ++ei)
 		sp1_MoveSprAbs(spr_enemies[ei], &maze_clip, 0, 25, 0, 0, 0);
 	sp1_UpdateNow();
@@ -1940,7 +1923,7 @@ main()
 
 	/* Initialize SP1 sprite engine */
 	heap = 0L;
-	sbrk((void *)0xF200, 0x0DFE);  /* rotation table area, unused with NR sprites */
+	sbrk((void *)0xF200, 0x0B34);  /* $F200-$FD33: sprite heap; $FD34+: framebufs */
 
 	sp1_Initialize(SP1_IFLAG_OVERWRITE_TILES | SP1_IFLAG_OVERWRITE_DFILE,
 		CORR_ATTR, 'F');
@@ -1965,12 +1948,6 @@ main()
 	spr_player->xthresh = 1;
 	spr_player->ythresh = 1;
 	sp1_set_spr_colour(spr_player, PLAYER_ATTR);
-
-	/* Exit sprite: single-column, stays cell-aligned (no pixel scrolling) */
-	spr_exit_s = sp1_CreateSpr(SP1_DRAW_MASK2NR, SP1_TYPE_2BYTE, 2, 0, 1);
-	spr_exit_s->xthresh = 0;
-	spr_exit_s->ythresh = 1;
-	sp1_set_spr_colour(spr_exit_s, EXIT_ATTR);
 
 	{
 		static unsigned char ei;
@@ -2191,7 +2168,6 @@ main()
 		total_coins = coins_left;
 		coins_needed = (total_coins + 1) / 2;  /* need half the coins */
 		exit_open = 0;
-		sp1_set_spr_colour(spr_exit_s, EXIT_LOCKED_ATTR);
 		if (demo_mode) { gun_placed = 0; has_gun = 0; } else place_gun();
 		draw_exit(exit_gx, exit_gy);
 		{
