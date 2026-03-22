@@ -51,16 +51,9 @@ Build/run cycle:
 ## TODO
 
 # bugs:
-- sometimes player walks through enemy, still
-+ time pretends to be in seconds but ticks slower - show just a counter then?
-+ starting game (keypress after selecting difficulty) is not very responsive
-+ make masks one pixel wider
-+ make "edge"/"shadow" on coin
-+ make exit sprite one pixel smaller
-- before trying to fix demo mode i think framerate was faster
+- sometimes player walks through enemy, still. i.e. dies but still shown after enemy
 
 # features:
-+ speed up enemies with level?
 - web emul
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music

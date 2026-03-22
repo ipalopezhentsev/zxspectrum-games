@@ -2008,10 +2008,11 @@ main()
 		   Sample initial joystick state first to avoid false triggers on
 		   floating bus (Kempston) or held buttons at startup. */
 		{
-			static unsigned char joy_k, joy_s, prev_k, prev_s;
+			static unsigned char joy_k, joy_s, prev_k, prev_s, prev_key;
 			static unsigned int demo_timer;
 			prev_k = (unsigned char)in_JoyKempston() & in_FIRE;
 			prev_s = (unsigned char)in_JoySinclair1() & in_FIRE;
+			prev_key = 0;
 			demo_timer = 0;
 			while (1) {
 				intrinsic_halt();
@@ -2020,17 +2021,21 @@ main()
 				if (k) demo_timer = 0; else demo_timer++;
 				joy_k = (unsigned char)in_JoyKempston() & in_FIRE;
 				joy_s = (unsigned char)in_JoySinclair1() & in_FIRE;
-				if (k == 'q') {
+				if (k == 'q' && !prev_key) {
 					if (diff_cursor > 0) diff_cursor--;
 					menu_cursor = diff_cursor;
-					draw_menu();
-					wait_key_release();
-				} else if (k == 'a') {
+					draw_item(5, "Easy",      menu_cursor == 0);
+					draw_item(6, "Normal",    menu_cursor == 1);
+					draw_item(7, "Hard",      menu_cursor == 2);
+					draw_item(8, "Nightmare", menu_cursor == 3);
+				} else if (k == 'a' && !prev_key) {
 					if (diff_cursor < 3) diff_cursor++;
 					menu_cursor = diff_cursor;
-					draw_menu();
-					wait_key_release();
-				} else if (k == '\r' || k == ' ') {
+					draw_item(5, "Easy",      menu_cursor == 0);
+					draw_item(6, "Normal",    menu_cursor == 1);
+					draw_item(7, "Hard",      menu_cursor == 2);
+					draw_item(8, "Nightmare", menu_cursor == 3);
+				} else if ((k == '\r' || k == ' ') && !prev_key) {
 					joy_type = 0;
 					break;
 				} else if (joy_k && !prev_k) {
@@ -2048,6 +2053,7 @@ main()
 				}
 				prev_k = joy_k;
 				prev_s = joy_s;
+				prev_key = k;
 			}
 		}
 		if (demo_mode)
