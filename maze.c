@@ -272,6 +272,12 @@ const unsigned char gfx_player[8] = {0x00, 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0
 const unsigned char gfx_enemy[8]  = {0x00, 0x10, 0x28, 0x54, 0x28, 0x10, 0x00, 0x00};
 const unsigned char gfx_exit_tile[8] = {0x00, 0x82, 0x44, 0x28, 0x10, 0x28, 0x44, 0x82};
 
+/* Expanded masks: each row = gfx[i] | gfx[i-1] | gfx[i+1], then widened 1px
+   each side with (e | e>>1 | e<<1).  Precomputed to avoid sccz80 issues. */
+const unsigned char msk_player[8] = {0x00, 0x7C, 0xFE, 0xFE, 0xFE, 0xFE, 0xFE, 0x7C};
+const unsigned char msk_enemy[8]  = {0x38, 0x7C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38, 0x00};
+const unsigned char msk_exit_tile[8] = {0xC7, 0xEF, 0xFF, 0xFE, 0x7C, 0xFE, 0xFF, 0xEF};
+
 
 /* Set attribute for character cell (row, col).
    Used for text rows outside SP1-managed area. */
@@ -296,6 +302,7 @@ void sp1_set_spr_colour(struct sp1_ss *s, unsigned char attr)
    cell_aligned: 1 = content first (for vrot=0), 0 = transparent first (for vrot>0).
    Mask = ~graphic for transparent sprite edges. */
 void gen_frame(unsigned char *buf, const unsigned char *gfx,
+               const unsigned char *msk,
                unsigned char h, unsigned char cell_aligned)
 {
 	static unsigned char i, g, g0, g1, shl;
@@ -310,7 +317,7 @@ void gen_frame(unsigned char *buf, const unsigned char *gfx,
 	for (i = 0; i != 8; ++i) {
 		g = gfx[i];
 		g0 = g >> h;
-		*p++ = ~g0;
+		*p++ = ~(msk[i] >> h);
 		*p++ = g0;
 	}
 	for (i = 0; i != (cell_aligned ? 15 : 7); ++i) { *p++ = 0xFF; *p++ = 0x00; }
@@ -321,7 +328,7 @@ void gen_frame(unsigned char *buf, const unsigned char *gfx,
 	for (i = 0; i != 8; ++i) {
 		g = gfx[i];
 		g1 = (g << shl) & 0xFF;
-		*p++ = ~g1;
+		*p++ = ~((msk[i] << shl) & 0xFF);
 		*p++ = g1;
 	}
 	for (i = 0; i != (cell_aligned ? 15 : 7); ++i) { *p++ = 0xFF; *p++ = 0x00; }
@@ -331,7 +338,7 @@ void gen_frame(unsigned char *buf, const unsigned char *gfx,
    relative to the maze origin. Uses vrot for vertical sub-cell offset
    and pre-shifted frames for horizontal. */
 void render_spr_pix(struct sp1_ss *s, unsigned char *buf,
-                    const unsigned char *gfx,
+                    const unsigned char *gfx, const unsigned char *msk,
                     unsigned char pixel_x, unsigned char pixel_y)
 {
 	static unsigned char h, d, v;
@@ -341,13 +348,13 @@ void render_spr_pix(struct sp1_ss *s, unsigned char *buf,
 	d = pixel_y & 7;
 
 	if (d == 0) {
-		gen_frame(buf, gfx, h, 1);  /* content first */
+		gen_frame(buf, gfx, msk, h, 1);  /* content first */
 		R = pixel_y >> 3;
 		v = 0;
 		sp1_MoveSprAbs(s, &maze_clip, buf,
 			MAZE_R0 + R, MAZE_C0 + (pixel_x >> 3), v, h);
 	} else {
-		gen_frame(buf, gfx, h, 0);  /* transparent first */
+		gen_frame(buf, gfx, msk, h, 0);  /* transparent first */
 		R = pixel_y >> 3;
 		v = d;
 		/* frame pointer at buf+16 (content start) so SP1's
@@ -523,7 +530,7 @@ void draw_dot(unsigned char gx, unsigned char gy)
 {
 	ppx = gx * 8;
 	ppy = gy * 8;
-	render_spr_pix(spr_player, framebuf_player, gfx_player, ppx, ppy);
+	render_spr_pix(spr_player, framebuf_player, gfx_player, msk_player, ppx, ppy);
 }
 
 void draw_exit(unsigned char gx, unsigned char gy)
@@ -645,7 +652,7 @@ void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
 	sn = n;
 	epx[sn] = gx * 8;
 	epy[sn] = gy * 8;
-	render_spr_pix(spr_enemies[sn], framebuf_enemies[sn], gfx_enemy,
+	render_spr_pix(spr_enemies[sn], framebuf_enemies[sn], gfx_enemy, msk_enemy,
 	               epx[sn], epy[sn]);
 }
 
@@ -2319,7 +2326,7 @@ main()
 						if (demo_mode) { game_over = 1; break; }
 						score += 50 + timer_sec;
 						render_spr_pix(spr_player, framebuf_player,
-						               gfx_player, ppx, ppy);
+						               gfx_player, msk_player, ppx, ppy);
 						sp1_UpdateNow();
 						win_cut_scene();
 						wait_any_key();
@@ -2368,7 +2375,7 @@ main()
 
 			/* Render player at current pixel position */
 			render_spr_pix(spr_player, framebuf_player,
-			               gfx_player, ppx, ppy);
+			               gfx_player, msk_player, ppx, ppy);
 
 			/* --- Enemy moves: decide + animate --- */
 			{
@@ -2400,7 +2407,7 @@ main()
 					}
 					render_spr_pix(spr_enemies[ei],
 					               framebuf_enemies[ei],
-					               gfx_enemy, epx[ei], epy[ei]);
+					               gfx_enemy, msk_enemy, epx[ei], epy[ei]);
 				}
 
 				/* Coins impossible? Game over if can't reach threshold */
