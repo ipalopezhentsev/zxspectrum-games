@@ -611,24 +611,42 @@ void snd_shot_hit()
 void wait_any_key()
 {
 	/* Wait for everything released */
-	while (in_Inkey() ||
-	       ((unsigned char)in_JoyKempston() & in_FIRE) ||
-	       ((unsigned char)in_JoySinclair1() & in_FIRE))
+	while (in_Inkey())
 		;
+	if (joy_type == 1) {
+		while ((unsigned char)in_JoyKempston() & in_FIRE)
+			;
+	} else if (joy_type == 2) {
+		while ((unsigned char)in_JoySinclair1() & in_FIRE)
+			;
+	}
 	/* Wait for any key or joystick fire */
-	while (!in_Inkey() &&
-	       !((unsigned char)in_JoyKempston() & in_FIRE) &&
-	       !((unsigned char)in_JoySinclair1() & in_FIRE))
-		;
+	if (joy_type == 1) {
+		while (!in_Inkey() &&
+		       !((unsigned char)in_JoyKempston() & in_FIRE))
+			;
+	} else if (joy_type == 2) {
+		while (!in_Inkey() &&
+		       !((unsigned char)in_JoySinclair1() & in_FIRE))
+			;
+	} else {
+		while (!in_Inkey())
+			;
+	}
 }
 
 /* Wait until all keys and joystick buttons are released */
 void wait_key_release()
 {
-	while (in_Inkey() ||
-	       ((unsigned char)in_JoyKempston() & in_FIRE) ||
-	       ((unsigned char)in_JoySinclair1() & in_FIRE))
+	while (in_Inkey())
 		;
+	if (joy_type == 1) {
+		while ((unsigned char)in_JoyKempston() & in_FIRE)
+			;
+	} else if (joy_type == 2) {
+		while ((unsigned char)in_JoySinclair1() & in_FIRE)
+			;
+	}
 }
 
 void draw_enemy_n(unsigned char n, unsigned char gx, unsigned char gy)
@@ -2022,7 +2040,7 @@ main()
 					joy_type = 2;
 					break;
 				} else if (demo_timer >= 500) {
-					demo_mode = 250;  /* grace frames before accepting keys */
+					demo_mode = 25;  /* grace frames before accepting keys */
 					demo_target = 255;
 					nav_valid = 0;
 					joy_type = 0;
