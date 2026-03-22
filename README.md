@@ -56,7 +56,7 @@ Build/run cycle:
 - starting game (keypress after selecting difficulty) is not very responsive
 + make masks one pixel wider
 - make "edge"/"shadow" on coin
-- make exit sprite one pixel smaller
++ make exit sprite one pixel smaller
 
 # features:
 + speed up enemies with level?
