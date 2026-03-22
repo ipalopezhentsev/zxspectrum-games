@@ -145,11 +145,20 @@ struct sp1_Rect full_screen = {0, 0, 32, 24};
 /* SP1 colour callback globals */
 unsigned char sp1_colour;
 unsigned char sp1_cmask;
+unsigned char sp1_colour_ht;  /* chars per column (= sprite height) */
 
 void colourSpr(unsigned int count, struct sp1_cs *c)
 {
-	c->attr_mask = sp1_cmask;
-	c->attr = sp1_colour;
+	if (count < sp1_colour_ht) {
+		/* Main column: set sprite colour */
+		c->attr_mask = sp1_cmask;
+		c->attr = sp1_colour;
+	} else {
+		/* Overflow column: attribute-transparent —
+		   prevents colour bleed into adjacent cells */
+		c->attr_mask = 0xFF;
+		c->attr = 0x00;
+	}
 }
 
 /* BFS lookup tables: precomputed row/col from linear index,
@@ -329,6 +338,7 @@ void sp1_set_spr_colour(struct sp1_ss *s, unsigned char attr)
 {
 	sp1_cmask = 0x00;
 	sp1_colour = attr;
+	sp1_colour_ht = 2;  /* sprite height: 2 rows per column */
 	sp1_IterateSprChar(s, colourSpr);
 }
 
@@ -2461,6 +2471,20 @@ main()
 					render_spr_pix(spr_enemies[ei],
 					               framebuf_enemies[ei],
 					               cur_pgfx, cur_pmsk, epx[ei], epy[ei]);
+				}
+
+				/* Per-frame pixel-proximity collision check —
+				   catches swap-throughs and mid-animation overlaps
+				   that the grid-based checks miss */
+				if (!caught) {
+					for (ei = 0; ei != num_enemies; ++ei) {
+						if (enemy_stun[ei]) continue;
+						if ((unsigned char)(ppx - epx[ei] + 7) < 15 &&
+						    (unsigned char)(ppy - epy[ei] + 7) < 15) {
+							caught = 1;
+							break;
+						}
+					}
 				}
 
 				/* Gems impossible? Game over if can't reach threshold */
