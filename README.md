@@ -52,11 +52,12 @@ Build/run cycle:
 
 # bugs:
 - sometimes player walks through enemy, still
-- time pretends to be in seconds but ticks slower - show just a counter then?
++ time pretends to be in seconds but ticks slower - show just a counter then?
 - starting game (keypress after selecting difficulty) is not very responsive
 + make masks one pixel wider
 + make "edge"/"shadow" on coin
 + make exit sprite one pixel smaller
+- before trying to fix demo mode i think framerate was faster
 
 # features:
 + speed up enemies with level?

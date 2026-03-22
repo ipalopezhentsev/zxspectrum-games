@@ -794,7 +794,7 @@ void set_row_attr(unsigned char row, unsigned char attr)
 #define SCORE_LABEL_X  25  /* "SCORE: " starts here (row 22) */
 #define SCORE_NUM_X    32  /* 6-digit number starts here */
 #define TIMER_LABEL_X  27  /* "TIME " starts here (row 0) */
-#define TIMER_NUM_X    32  /* "d:dd" starts here */
+#define TIMER_NUM_X    32  /* 3-digit counter starts here */
 #define GEMS_LABEL_X  38  /* "GEMS TO GO" starts here (row 0) */
 #define GEMS_NUM_X    50  /* 2-digit number starts here */
 
@@ -822,15 +822,10 @@ void show_score()
 /* Update time digits only (row 0) — also sets attr for warning */
 void show_timer()
 {
-	static unsigned char m, s;
 	static unsigned char attr;
 	attr = (timer_sec <= 10) ? TIMER_WARN_ATTR : TIMER_ATTR;
 	set_print_attr(attr);
-	/* divmod 60 via subtraction — faster than library divide on Z80 */
-	s = timer_sec;
-	m = 0;
-	while (s >= 60) { s -= 60; m++; }
-	sprintf(txt_buffer, "%d:%02d", m, s);
+	sprintf(txt_buffer, "%3d", timer_sec);
 	gotoxy(TIMER_NUM_X, 0); printf(txt_buffer);
 	/* Recolour "TIME" label cells when warning kicks in */
 	if (timer_sec <= 10) {
