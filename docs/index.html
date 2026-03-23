@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZX Spectrum Maze</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    :root {
+      --zx-black:   #000000;
+      --zx-blue:    #0000D7;
+      --zx-red:     #D70000;
+      --zx-magenta: #D700D7;
+      --zx-green:   #00D700;
+      --zx-cyan:    #00D7D7;
+      --zx-yellow:  #D7D700;
+      --zx-white:   #D7D7D7;
+      --zx-bblue:   #0000FF;
+      --zx-bred:    #FF0000;
+      --zx-bmagenta:#FF00FF;
+      --zx-bgreen:  #00FF00;
+      --zx-bcyan:   #00FFFF;
+      --zx-byellow: #FFFF00;
+      --zx-bwhite:  #FFFFFF;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      background-color: var(--zx-blue);
+      color: var(--zx-bwhite);
+      font-family: 'Press Start 2P', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 16px;
+      image-rendering: pixelated;
+    }
+
+    /* Scanline overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0,0,0,0.12) 3px,
+        rgba(0,0,0,0.12) 4px
+      );
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .title-bar {
+      background: var(--zx-black);
+      border: 4px solid var(--zx-bcyan);
+      padding: 12px 24px;
+      margin-bottom: 8px;
+      display: inline-block;
+    }
+
+    .title-bar h1 {
+      font-size: clamp(16px, 3.5vw, 28px);
+      color: var(--zx-byellow);
+      text-shadow: 3px 3px 0 var(--zx-red);
+      letter-spacing: 2px;
+      line-height: 1.4;
+    }
+
+    .subtitle {
+      font-size: clamp(9px, 1.2vw, 12px);
+      color: var(--zx-bcyan);
+      margin-top: 6px;
+      letter-spacing: 1px;
+    }
+
+    .loading-text {
+      font-size: clamp(9px, 1.2vw, 12px);
+      color: var(--zx-bwhite);
+      margin-top: 6px;
+    }
+
+    .blink {
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* Two-column layout: sidebar | emulator */
+    .page-layout {
+      display: flex;
+      flex-direction: row;
+      gap: 24px;
+      align-items: flex-start;
+      justify-content: center;
+      width: 100%;
+    }
+
+    /* Sidebar: info boxes + controls stacked */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex-shrink: 0;
+      width: max-content;
+    }
+
+    /* On narrow screens: stack vertically, sidebar goes above emulator */
+    @media (max-width: 1060px) {
+      .page-layout {
+        flex-direction: column;
+        align-items: center;
+      }
+      .sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+        width: 100%;
+        max-width: 800px;
+        justify-content: center;
+      }
+    }
+
+    /* Emulator container */
+    .emu-wrapper {
+      background: var(--zx-black);
+      border: 4px solid var(--zx-bwhite);
+      box-shadow:
+        0 0 0 4px var(--zx-blue),
+        0 0 0 8px var(--zx-bcyan),
+        8px 8px 0 8px rgba(0,0,0,0.5);
+      position: relative;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .emu-wrapper::before {
+      position: absolute;
+      top: -28px;
+      left: 0;
+      font-size: clamp(7px, 0.9vw, 10px);
+      color: var(--zx-bcyan);
+      letter-spacing: 2px;
+    }
+
+    #jsspeccy {
+      display: block;
+      line-height: 0;
+    }
+
+    /* Info boxes */
+    .info-strip {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    @media (max-width: 1060px) {
+      .info-strip {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 16px;
+      }
+    }
+
+    .info-box {
+      background: var(--zx-black);
+      border: 2px solid var(--zx-bgreen);
+      padding: 10px 14px;
+      font-size: clamp(9px, 1.1vw, 12px);
+      color: var(--zx-bgreen);
+      line-height: 2;
+    }
+
+    .info-box .label {
+      color: var(--zx-byellow);
+      display: block;
+      margin-bottom: 6px;
+      border-bottom: 1px solid var(--zx-bgreen);
+      padding-bottom: 4px;
+    }
+
+    /* Controls table */
+    .controls {
+      background: var(--zx-black);
+      border: 2px solid var(--zx-byellow);
+      padding: 12px 16px;
+      font-size: clamp(9px, 1.1vw, 12px);
+      color: var(--zx-bwhite);
+      line-height: 2.2;
+    }
+
+    .controls .heading {
+      color: var(--zx-byellow);
+      font-size: clamp(10px, 1.3vw, 14px);
+      display: block;
+      margin-bottom: 10px;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+
+    .controls table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    .controls td {
+      padding: 2px 8px;
+      white-space: nowrap;
+    }
+
+    .controls td:first-child {
+      color: var(--zx-bcyan);
+      border: 1px solid var(--zx-blue);
+      background: var(--zx-blue);
+      text-align: center;
+    }
+
+    footer {
+      margin-top: 24px;
+      font-size: clamp(8px, 1vw, 11px);
+      color: var(--zx-white);
+      text-align: center;
+      line-height: 2.5;
+      opacity: 0.7;
+    }
+
+    footer a {
+      color: var(--zx-bcyan);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      color: var(--zx-byellow);
+    }
+
+    #start-btn {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      background: var(--zx-black);
+      color: var(--zx-byellow);
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(12px, 1.8vw, 16px);
+      border: 4px solid var(--zx-byellow);
+      cursor: pointer;
+      letter-spacing: 2px;
+    }
+
+    #start-btn:hover {
+      background: var(--zx-byellow);
+      color: var(--zx-black);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="title-bar">
+      <h1>★ MAZE ★</h1>
+      <div class="subtitle">A ZX SPECTRUM GAME</div>
+    </div>
+  </header>
+
+  <div class="page-layout">
+
+    <aside class="sidebar">
+      <div class="controls">
+        <span class="heading">— CONTROLS —</span>
+        <table>
+          <tr><td>Q / A</td><td>MOVE UP / DOWN</td></tr>
+          <tr><td>O / P</td><td>MOVE LEFT / RIGHT</td></tr>
+          <tr><td>SPACE</td><td>START GAME / FIRE</td></tr>
+        </table>
+      </div>
+
+      <div class="info-strip">
+        <div class="info-box">
+          <span class="label">▸ SYSTEM</span>
+          ZX SPECTRUM 48K<br>
+          Z80 @ 3.5 MHZ<br>
+          48KB RAM
+        </div>
+      </div>
+    </aside>
+
+    <div class="emu-wrapper">
+      <div id="jsspeccy"></div>
+      <button id="start-btn">&#9654; PRESS TO START</button>
+    </div>
+
+  </div>
+
+  <footer>
+    &copy; 2026 ILYA PALOPEZHENTSEV &bull; ALL RIGHTS RESERVED<br>
+    BUILT WITH <a href="https://z88dk.org/site/">Z88DK</a>
+    &bull;
+    <a href="https://github.com/gasman/jsspeccy3">JSSPECCY3</a> EMULATOR
+  </footer>
+
+  <script src="jsspeccy/jsspeccy.js"></script>
+  <script>
+    document.getElementById('start-btn').addEventListener('click', function() {
+      this.style.display = 'none';
+      var emu = JSSpeccy(document.getElementById('jsspeccy'), {
+        zoom: 3,
+        machine: 48,
+        autoStart: true,
+        autoLoadTapes: true,
+        tapeAutoLoadMode: 'default',
+        tapeTrapsEnabled: true,
+        openUrl: 'maze.tap',
+        sandbox: true
+      });
+
+      emu.onReady(function() {
+        var msg = document.getElementById('loading-msg');
+        if (msg) msg.style.display = 'none';
+      });
+    });
+  </script>
+
+</body>
+</html>
