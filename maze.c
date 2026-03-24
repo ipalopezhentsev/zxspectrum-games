@@ -338,7 +338,7 @@ void sp1_set_spr_colour(struct sp1_ss *s, unsigned char attr)
 {
 	sp1_cmask = 0x00;
 	sp1_colour = attr;
-	sp1_colour_ht = 2;  /* sprite height: 2 rows per column */
+	sp1_colour_ht = 4;  /* all cells in 2-col height-2 sprite */
 	sp1_IterateSprChar(s, colourSpr);
 }
 
@@ -2438,6 +2438,7 @@ main()
 			/* Render player at current pixel position */
 			update_player_spr();
 			render_spr_pix(spr_player, framebuf_player, cur_pgfx, cur_pmsk, ppx, ppy);
+			sp1_set_spr_colour(spr_player, PLAYER_ATTR);
 
 			/* --- Enemy moves: decide + animate --- */
 			{
@@ -2471,6 +2472,7 @@ main()
 					render_spr_pix(spr_enemies[ei],
 					               framebuf_enemies[ei],
 					               cur_pgfx, cur_pmsk, epx[ei], epy[ei]);
+					sp1_set_spr_colour(spr_enemies[ei], enemy_attrs[ei]);
 				}
 
 				/* Per-frame pixel-proximity collision check —

@@ -51,13 +51,11 @@ Build/run cycle:
 ## TODO
 
 # bugs:
-+ sometimes player walks through enemy, still. i.e. dies but still shown after enemy
+- wobbly movement in demo
 
 # features:
-- web emul
 - don't place enemies in positions that don't allow me to pass them (not corner me)
 - ay effects/music
-+- demo mode (has bug with wobbly movement)
 + use more standard stuff from arch/zx/spectrum.h: zx_cls_attr,  // DISPLAY PIXEL ADDRESS MANIPULATORS
 +// DISPLAY ATTRIBUTE ADDRESS MANIPULATORS
 sound/aywyz.h - WYZ tracker for AY819x sound chips
