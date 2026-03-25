@@ -320,7 +320,7 @@
     document.getElementById('start-btn').addEventListener('click', function() {
       this.style.display = 'none';
       var emu = JSSpeccy(document.getElementById('jsspeccy'), {
-        zoom: 3,
+        zoom: window.matchMedia('(orientation: portrait)').matches ? 2 : 3,
         machine: 48,
         autoStart: true,
         autoLoadTapes: true,
