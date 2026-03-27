@@ -77,7 +77,7 @@ unsigned int rseed;
 struct in_UDK udk;
 unsigned char joy_type;    /* 0=keyboard, 1=kempston, 2=sinclair */
 unsigned char menu_cursor; /* 0-3=difficulty */
-unsigned char diff_cursor; /* 0-3: last selected difficulty item */
+unsigned char diff_cursor = 1; /* 0-3: last selected difficulty item, default Normal */
 
 /* Gem map: 1=gem present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char gemmap[ROWS * COLS];
@@ -2221,8 +2221,7 @@ main()
 		zx_border(INK_BLACK);
 		gotoxy(0, 0);
 
-		/* Init selections: default Normal */
-		diff_cursor = 1;  /* Normal */
+		/* Keep previous difficulty selection (diff_cursor inits to 0 as global) */
 		menu_cursor = diff_cursor;
 		draw_menu();
 
