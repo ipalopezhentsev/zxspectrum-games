@@ -183,13 +183,22 @@ unsigned int erow_x_ecols[EROWS];
 
 unsigned char nav_valid;  /* 0=need BFS, 1-4=cached dir+1 */
 
-/* Transient globals for inline-asm BFS loop */
+/* Transient globals for old inline-asm BFS loop (demo AI) */
 unsigned char bfs_efi_g;
 unsigned char bfs_head_g;
 unsigned char bfs_tail_g;
 unsigned char bfs_result_g;
 unsigned int bfs_adj_ptr_g;
 unsigned char bfs_mode_g;  /* 0=fixed direction (enemy), 1=propagate (demo) */
+
+/* Transient globals for full-grid asm BFS (enemy AI) */
+unsigned int fbfs_hp_g;      /* head pointer into fbfs_stk */
+unsigned int fbfs_tp_g;      /* tail pointer into fbfs_stk */
+unsigned int fbfs_ni_g;      /* scratch: current neighbor index */
+
+/* Cached BFS map — reused by all enemies until player moves */
+unsigned char fbfs_ppx, fbfs_ppy;  /* player pos when BFS was last run */
+unsigned char fbfs_valid;          /* 1 = map is current */
 unsigned char demo_target;   /* sticky gem target cell (255=none) */
 
 #define ATTR_P_ADDR 23693
@@ -1346,70 +1355,176 @@ void bfs_cleanup()
 		vis[stk[i]] = 0;
 }
 
-/* Full expanded-grid BFS for enemy pathfinding.
-   Uses wallmap[] directly — no precomputed adjacency table.
-   BFS from player to enemy; vis[] stores direction of last step.
+/* Run full expanded-grid BFS from player, filling fbfs_vis for ALL
+   reachable cells.  Cached until the player moves — all enemies
+   read from the same map.  Asm inner loop, no early termination. */
+void fbfs_ensure()
+{
+	static uint pi;
+
+	if (fbfs_valid && fbfs_ppx == px && fbfs_ppy == py) return;
+
+	/* Clear old map if any */
+	if (fbfs_valid)
+		memset((void *)0xF800u, 0, 551u);
+
+	pi = erow_x_ecols[py] + px;
+	fbfs_hp_g = 0xFA28u;
+	fbfs_tp_g = 0xFA28u + 2;
+	*((unsigned int *)0xFA28u) = pi;
+	fbfs_vis[pi] = 5;
+
+#asm
+	push ix
+
+.fbfs_loop
+	; --- head == tail? ---
+	ld hl, (_fbfs_hp_g)
+	ld de, (_fbfs_tp_g)
+	or a
+	sbc hl, de
+	jp z, fbfs_end
+
+	; --- dequeue: BC = *headptr; headptr += 2 ---
+	ld hl, (_fbfs_hp_g)
+	ld c, (hl)
+	inc hl
+	ld b, (hl)
+	inc hl
+	ld (_fbfs_hp_g), hl
+
+	; === Left: ni = ci - 1 ===
+	ld l, c
+	ld h, b
+	dec hl
+	ld (_fbfs_ni_g), hl
+	ld de, _wallmap
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sl
+	ld hl, (_fbfs_ni_g)
+	ld de, $F800
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sl
+	ld (hl), 1
+	ld hl, (_fbfs_tp_g)
+	ld de, (_fbfs_ni_g)
+	ld (hl), e
+	inc hl
+	ld (hl), d
+	inc hl
+	ld (_fbfs_tp_g), hl
+.fbfs_sl
+
+	; === Right: ni = ci + 1 ===
+	ld l, c
+	ld h, b
+	inc hl
+	ld (_fbfs_ni_g), hl
+	ld de, _wallmap
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sr
+	ld hl, (_fbfs_ni_g)
+	ld de, $F800
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sr
+	ld (hl), 2
+	ld hl, (_fbfs_tp_g)
+	ld de, (_fbfs_ni_g)
+	ld (hl), e
+	inc hl
+	ld (hl), d
+	inc hl
+	ld (_fbfs_tp_g), hl
+.fbfs_sr
+
+	; === Up: ni = ci - 29 ===
+	ld l, c
+	ld h, b
+	ld de, $FFE3          ; -29
+	add hl, de
+	ld (_fbfs_ni_g), hl
+	ld de, _wallmap
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_su
+	ld hl, (_fbfs_ni_g)
+	ld de, $F800
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_su
+	ld (hl), 3
+	ld hl, (_fbfs_tp_g)
+	ld de, (_fbfs_ni_g)
+	ld (hl), e
+	inc hl
+	ld (hl), d
+	inc hl
+	ld (_fbfs_tp_g), hl
+.fbfs_su
+
+	; === Down: ni = ci + 29 ===
+	ld l, c
+	ld h, b
+	ld de, 29
+	add hl, de
+	ld (_fbfs_ni_g), hl
+	ld de, _wallmap
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sd
+	ld hl, (_fbfs_ni_g)
+	ld de, $F800
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs_sd
+	ld (hl), 4
+	ld hl, (_fbfs_tp_g)
+	ld de, (_fbfs_ni_g)
+	ld (hl), e
+	inc hl
+	ld (hl), d
+	inc hl
+	ld (_fbfs_tp_g), hl
+.fbfs_sd
+
+	jp fbfs_loop
+
+.fbfs_end
+	pop ix
+#endasm
+
+	fbfs_ppx = px;
+	fbfs_ppy = py;
+	fbfs_valid = 1;
+}
+
+/* Cheap lookup into cached BFS map.
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 char enemy_bfs(unsigned char exx, unsigned char eyy)
 {
-	static uint ei, pi, ci, ni;
-	static uint head, tail;
 	static unsigned char d;
 
-	ei = erow_x_ecols[eyy] + exx;
-	pi = erow_x_ecols[py] + px;
+	fbfs_ensure();
 
-	head = 0;
-	tail = 1;
-	fbfs_stk[0] = pi;
-	fbfs_vis[pi] = 5;
-
-	while (head != tail) {
-		ci = fbfs_stk[head];
-		++head;
-
-		if (ci == ei) {
-			d = fbfs_vis[ci];
-			/* cleanup visited cells */
-			for (head = 0; head != tail; ++head)
-				fbfs_vis[fbfs_stk[head]] = 0;
-			d--;
-			if (d == 0) return 1;  /* left  → enemy goes right */
-			if (d == 1) return 0;  /* right → enemy goes left  */
-			if (d == 2) return 3;  /* up    → enemy goes down  */
-			if (d == 3) return 2;  /* down  → enemy goes up    */
-			return -1;
-		}
-
-		/* Expand left */
-		ni = ci - 1;
-		if (!wallmap[ni] && !fbfs_vis[ni]) {
-			fbfs_vis[ni] = 1;
-			fbfs_stk[tail++] = ni;
-		}
-		/* Expand right */
-		ni = ci + 1;
-		if (!wallmap[ni] && !fbfs_vis[ni]) {
-			fbfs_vis[ni] = 2;
-			fbfs_stk[tail++] = ni;
-		}
-		/* Expand up */
-		ni = ci - ECOLS;
-		if (!wallmap[ni] && !fbfs_vis[ni]) {
-			fbfs_vis[ni] = 3;
-			fbfs_stk[tail++] = ni;
-		}
-		/* Expand down */
-		ni = ci + ECOLS;
-		if (!wallmap[ni] && !fbfs_vis[ni]) {
-			fbfs_vis[ni] = 4;
-			fbfs_stk[tail++] = ni;
-		}
-	}
-
-	/* Not found — cleanup */
-	for (head = 0; head != tail; ++head)
-		fbfs_vis[fbfs_stk[head]] = 0;
+	d = fbfs_vis[erow_x_ecols[eyy] + exx];
+	if (d == 0) return -1;
+	d--;
+	if (d == 0) return 1;  /* left  → enemy goes right */
+	if (d == 1) return 0;  /* right → enemy goes left  */
+	if (d == 2) return 3;  /* up    → enemy goes down  */
+	if (d == 3) return 2;  /* down  → enemy goes up    */
 	return -1;
 }
 
@@ -2215,6 +2330,7 @@ main()
 		draw_maze();
 		memset(vis, 0, ROWS * COLS);  /* Clear for old BFS after maze gen */
 		memset(fbfs_vis, 0, 551u);    /* Clear full-grid BFS vis */
+		fbfs_valid = 0;               /* Force BFS recompute */
 
 		/* Random starting positions: exit first so others avoid it */
 		random_start(&exit_gx, &exit_gy, 255, 255, 255, 255);
