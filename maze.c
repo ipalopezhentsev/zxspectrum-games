@@ -199,6 +199,9 @@ unsigned int fbfs_ni_g;      /* scratch: current neighbor index */
 /* Cached BFS map — reused by all enemies until player moves */
 unsigned char fbfs_ppx, fbfs_ppy;  /* player pos when BFS was last run */
 unsigned char fbfs_valid;          /* 1 = map is current */
+/* asm bridge globals for fbfs_ensure */
+unsigned char fbfs_ci_g, fbfs_r_g, fbfs_c_g;
+unsigned int  fbfs_wr_g;
 unsigned char demo_target;   /* sticky gem target cell (255=none) */
 
 #define ATTR_P_ADDR 23693
@@ -1360,46 +1363,194 @@ void bfs_cleanup()
    126 cells with 8-bit indices = ~14x faster than full-grid BFS. */
 void fbfs_ensure()
 {
-	static unsigned char head, tail, ci, ni, r, c;
+	static unsigned char ci;
 
 	if (fbfs_valid && fbfs_ppx == px && fbfs_ppy == py) return;
 
-	/* Clear old map */
 	memset(vis, 0, ROWS * COLS);
 
 	ci = row_x_cols[py >> 1] + (px >> 1);
-	head = 0;
-	tail = 1;
 	stk[0] = ci;
 	vis[ci] = 5;
 
-	while (head != tail) {
-		ci = stk[head];
-		++head;
-		r = bfs_row[ci];
-		c = bfs_col[ci];
+#asm
+	; B = head, C = tail — kept in registers throughout the loop
+	ld b, 0
+	ld c, 1
 
-		/* Left: no right-wall on cell to the left */
-		if (c > 0 && !(walls[r][c - 1] & 1)) {
-			ni = ci - 1;
-			if (!vis[ni]) { vis[ni] = 1; stk[tail] = ni; ++tail; }
-		}
-		/* Right: no right-wall on this cell */
-		if (c < COLS - 1 && !(walls[r][c] & 1)) {
-			ni = ci + 1;
-			if (!vis[ni]) { vis[ni] = 2; stk[tail] = ni; ++tail; }
-		}
-		/* Up: no bottom-wall on cell above */
-		if (r > 0 && !(walls[r - 1][c] & 2)) {
-			ni = ci - COLS;
-			if (!vis[ni]) { vis[ni] = 3; stk[tail] = ni; ++tail; }
-		}
-		/* Down: no bottom-wall on this cell */
-		if (r < ROWS - 1 && !(walls[r][c] & 2)) {
-			ni = ci + COLS;
-			if (!vis[ni]) { vis[ni] = 4; stk[tail] = ni; ++tail; }
-		}
-	}
+.fbfs2_loop
+	ld a, b
+	cp c
+	jp z, fbfs2_done
+
+	; ci = stk[head]; head++
+	ld l, b
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld a, (hl)
+	ld (_fbfs_ci_g), a
+	inc b
+
+	; r = bfs_row[ci]
+	ld l, a
+	ld h, 0
+	ld de, _bfs_row
+	add hl, de
+	ld a, (hl)
+	ld (_fbfs_r_g), a
+
+	; c = bfs_col[ci]
+	ld a, (_fbfs_ci_g)
+	ld l, a
+	ld h, 0
+	ld de, _bfs_col
+	add hl, de
+	ld a, (hl)
+	ld (_fbfs_c_g), a
+
+	; wr = &walls[0][0] + row_x_cols[r]
+	ld a, (_fbfs_r_g)
+	ld l, a
+	ld h, 0
+	ld de, _row_x_cols
+	add hl, de
+	ld a, (hl)
+	ld l, a
+	ld h, 0
+	ld de, _walls
+	add hl, de
+	ld (_fbfs_wr_g), hl
+
+	; === LEFT: c > 0 && !(wr[c-1] & 1) ===
+	ld a, (_fbfs_c_g)
+	or a
+	jr z, fbfs2_no_left
+	dec a
+	ld l, a
+	ld h, 0
+	ld de, (_fbfs_wr_g)
+	add hl, de
+	bit 0, (hl)
+	jr nz, fbfs2_no_left
+	ld a, (_fbfs_ci_g)
+	dec a
+	ld l, a
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs2_no_left
+	ld (hl), 1
+	ld a, (_fbfs_ci_g)
+	dec a
+	ld l, c
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), a
+	inc c
+.fbfs2_no_left
+
+	; === RIGHT: c < 13 && !(wr[c] & 1) ===
+	ld a, (_fbfs_c_g)
+	cp 13
+	jr nc, fbfs2_no_right
+	ld l, a
+	ld h, 0
+	ld de, (_fbfs_wr_g)
+	add hl, de
+	bit 0, (hl)
+	jr nz, fbfs2_no_right
+	ld a, (_fbfs_ci_g)
+	inc a
+	ld l, a
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs2_no_right
+	ld (hl), 2
+	ld a, (_fbfs_ci_g)
+	inc a
+	ld l, c
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), a
+	inc c
+.fbfs2_no_right
+
+	; === UP: r > 0 && !(wr[c - 14] & 2) ===
+	ld a, (_fbfs_r_g)
+	or a
+	jr z, fbfs2_no_up
+	ld a, (_fbfs_c_g)
+	ld l, a
+	ld h, 0
+	ld de, (_fbfs_wr_g)
+	add hl, de
+	ld de, 65522          ; -14 in 16-bit unsigned
+	add hl, de
+	bit 1, (hl)
+	jr nz, fbfs2_no_up
+	ld a, (_fbfs_ci_g)
+	sub 14
+	ld l, a
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs2_no_up
+	ld (hl), 3
+	ld a, (_fbfs_ci_g)
+	sub 14
+	ld l, c
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), a
+	inc c
+.fbfs2_no_up
+
+	; === DOWN: r < 8 && !(wr[c] & 2) ===
+	ld a, (_fbfs_r_g)
+	cp 8
+	jr nc, fbfs2_no_down
+	ld a, (_fbfs_c_g)
+	ld l, a
+	ld h, 0
+	ld de, (_fbfs_wr_g)
+	add hl, de
+	bit 1, (hl)
+	jr nz, fbfs2_no_down
+	ld a, (_fbfs_ci_g)
+	add a, 14
+	ld l, a
+	ld h, 0
+	ld de, _vis
+	add hl, de
+	ld a, (hl)
+	or a
+	jr nz, fbfs2_no_down
+	ld (hl), 4
+	ld a, (_fbfs_ci_g)
+	add a, 14
+	ld l, c
+	ld h, 0
+	ld de, _stk
+	add hl, de
+	ld (hl), a
+	inc c
+.fbfs2_no_down
+
+	jp fbfs2_loop
+
+.fbfs2_done
+#endasm
 
 	fbfs_ppx = px;
 	fbfs_ppy = py;
