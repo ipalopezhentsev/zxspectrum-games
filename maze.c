@@ -170,11 +170,16 @@ unsigned char row_x_cols[ROWS];
 /* Precomputed row * ECOLS: eliminates Z80 multiply by 29 */
 unsigned int erow_x_ecols[EROWS];
 
-/* Precomputed adjacency for BFS: 4 neighbors per cell (L,R,U,D).
-   255 = wall or boundary. Built once after maze generation.
-   Placed at fixed address in upper memory (above SP1 heap sprite
-   allocations) to keep BSS below $D000. 504 bytes at $F600-$F7F7. */
+/* Precomputed adjacency for old BFS: 4 neighbors per cell (L,R,U,D).
+   504 bytes at $F600-$F7F7. Still used by demo AI. */
 #define adj ((unsigned char *)0xF600u)
+
+/* Full expanded-grid BFS arrays in upper memory.
+   vis: 551 bytes at $F800-$FA26.
+   stk: 551 uint entries at $FA28-$FE75 (overlaps frame bufs $FD34+,
+        safe because BFS completes before rendering). */
+#define fbfs_vis ((unsigned char *)0xF800u)
+#define fbfs_stk ((unsigned int *)0xFA28u)
 
 unsigned char nav_valid;  /* 0=need BFS, 1-4=cached dir+1 */
 
@@ -1107,14 +1112,15 @@ void build_adj()
 {
 	static unsigned char i, r, c;
 	static uint idx;
+	idx = 0;
 	for (i = 0; i != ROWS * COLS; ++i) {
 		r = bfs_row[i];
 		c = bfs_col[i];
-		idx = i * 4;
 		adj[idx]     = (c > 0 && !(walls[r][c - 1] & 1)) ? i - 1 : 255;
 		adj[idx + 1] = (c < COLS - 1 && !(walls[r][c] & 1)) ? i + 1 : 255;
 		adj[idx + 2] = (r > 0 && !(walls[r - 1][c] & 2)) ? i - COLS : 255;
 		adj[idx + 3] = (r < ROWS - 1 && !(walls[r][c] & 2)) ? i + COLS : 255;
+		idx += 4;
 	}
 }
 
@@ -1140,7 +1146,7 @@ void bfs_run_common()
 	or a
 	jr nz, bfs_il_nodepl
 	ld a, b
-	cp 40
+	cp 255
 	jp nc, bfs_il_end
 .bfs_il_nodepl
 
@@ -1341,37 +1347,70 @@ void bfs_cleanup()
 		vis[stk[i]] = 0;
 }
 
-/* BFS on maze cell grid. Enemy pathfinding.
+/* Full expanded-grid BFS for enemy pathfinding.
+   Uses wallmap[] directly — no precomputed adjacency table.
+   BFS from player to enemy; vis[] stores direction of last step.
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 char enemy_bfs(unsigned char exx, unsigned char eyy)
 {
-	static unsigned char ecx, ecy, pcx, pcy;
-	static unsigned char ci;
+	static uint ei, pi, ci, ni;
+	static uint head, tail;
 	static unsigned char d;
 
-	ecx = exx >> 1;  ecy = eyy >> 1;
-	pcx = px >> 1;   pcy = py >> 1;
+	ei = erow_x_ecols[eyy] + exx;
+	pi = erow_x_ecols[py] + px;
 
-	bfs_efi_g = row_x_cols[ecy] + ecx;
-	bfs_mode_g = 0;
+	head = 0;
+	tail = 1;
+	fbfs_stk[0] = pi;
+	fbfs_vis[pi] = 5;
 
-	bfs_head_g = 0;
-	bfs_tail_g = 1;
-	ci = row_x_cols[pcy] + pcx;
-	stk[0] = ci;
-	vis[ci] = 5;
-	bfs_result_g = 255;
+	while (head != tail) {
+		ci = fbfs_stk[head];
+		++head;
 
-	bfs_run_common();
-	bfs_cleanup();
+		if (ci == ei) {
+			d = fbfs_vis[ci];
+			/* cleanup visited cells */
+			for (head = 0; head != tail; ++head)
+				fbfs_vis[fbfs_stk[head]] = 0;
+			d--;
+			if (d == 0) return 1;  /* left  → enemy goes right */
+			if (d == 1) return 0;  /* right → enemy goes left  */
+			if (d == 2) return 3;  /* up    → enemy goes down  */
+			if (d == 3) return 2;  /* down  → enemy goes up    */
+			return -1;
+		}
 
-	d = bfs_result_g;
-	if (d == 255) return -1;
-	d--;
-	if (d == 0) return 1;  /* was left, enemy goes right */
-	if (d == 1) return 0;  /* was right, enemy goes left */
-	if (d == 2) return 3;  /* was up, enemy goes down */
-	if (d == 3) return 2;  /* was down, enemy goes up */
+		/* Expand left */
+		ni = ci - 1;
+		if (!wallmap[ni] && !fbfs_vis[ni]) {
+			fbfs_vis[ni] = 1;
+			fbfs_stk[tail++] = ni;
+		}
+		/* Expand right */
+		ni = ci + 1;
+		if (!wallmap[ni] && !fbfs_vis[ni]) {
+			fbfs_vis[ni] = 2;
+			fbfs_stk[tail++] = ni;
+		}
+		/* Expand up */
+		ni = ci - ECOLS;
+		if (!wallmap[ni] && !fbfs_vis[ni]) {
+			fbfs_vis[ni] = 3;
+			fbfs_stk[tail++] = ni;
+		}
+		/* Expand down */
+		ni = ci + ECOLS;
+		if (!wallmap[ni] && !fbfs_vis[ni]) {
+			fbfs_vis[ni] = 4;
+			fbfs_stk[tail++] = ni;
+		}
+	}
+
+	/* Not found — cleanup */
+	for (head = 0; head != tail; ++head)
+		fbfs_vis[fbfs_stk[head]] = 0;
 	return -1;
 }
 
@@ -1391,45 +1430,6 @@ char enemy_random_dir(unsigned char exx, unsigned char eyy)
 	return dirs[rand() % nd];
 }
 
-/* Try Manhattan direction toward player from (exx,eyy) on expanded grid.
-   Returns direction if passable, -1 if both axes blocked. */
-char enemy_manhattan(unsigned char exx, unsigned char eyy)
-{
-	static unsigned char adx, ady;
-	static uint fi;
-	static char dir1, dir2;
-	static char ddx, ddy;
-	ddx = px - exx;
-	ddy = py - eyy;
-	adx = ddx < 0 ? -ddx : ddx;
-	ady = ddy < 0 ? -ddy : ddy;
-	fi = erow_x_ecols[eyy] + exx;
-
-	/* Pick primary axis (larger distance), secondary as fallback */
-	if (adx >= ady) {
-		dir1 = (ddx > 0) ? 1 : 0;
-		dir2 = (ady == 0) ? -1 : ((ddy > 0) ? 3 : 2);
-	} else {
-		dir1 = (ddy > 0) ? 3 : 2;
-		dir2 = (adx == 0) ? -1 : ((ddx > 0) ? 1 : 0);
-	}
-
-	/* Try primary direction */
-	if (dir1 == 0 && !wallmap[fi - 1]) return 0;
-	if (dir1 == 1 && !wallmap[fi + 1]) return 1;
-	if (dir1 == 2 && !wallmap[fi - ECOLS]) return 2;
-	if (dir1 == 3 && !wallmap[fi + ECOLS]) return 3;
-
-	/* Try secondary direction */
-	if (dir2 >= 0) {
-		if (dir2 == 0 && !wallmap[fi - 1]) return 0;
-		if (dir2 == 1 && !wallmap[fi + 1]) return 1;
-		if (dir2 == 2 && !wallmap[fi - ECOLS]) return 2;
-		if (dir2 == 3 && !wallmap[fi + ECOLS]) return 3;
-	}
-
-	return -1;  /* both axes blocked — need BFS */
-}
 
 /* Decide direction for enemy n. Does NOT move the enemy.
    Returns 0=left,1=right,2=up,3=down, -1=no valid direction. */
@@ -1444,12 +1444,9 @@ char decide_enemy_dir(uchar n) __z88dk_fastcall
 	old_ey = eny[sn];
 
 	if ((old_ex & 1) && (old_ey & 1)) {
-		/* At maze cell — chase_pct% chase, rest random */
-		if ((uint)(rand() % 100) < chase_pct) {
-			dir = enemy_manhattan(old_ex, old_ey);
-			if (dir < 0)
-				dir = enemy_bfs(old_ex, old_ey);
-		} else
+		/* At maze cell — always BFS chase (testing) */
+		dir = enemy_bfs(old_ex, old_ey);
+		if (dir < 0)
 			dir = enemy_random_dir(old_ex, old_ey);
 	} else {
 		/* In corridor between cells — keep going */
@@ -2000,7 +1997,7 @@ main()
 
 	/* Initialize SP1 sprite engine */
 	heap = 0L;
-	sbrk((void *)0xF200, 0x0B34);  /* $F200-$FD33: sprite heap; $FD34+: framebufs */
+	sbrk((void *)0xF200, 0x0400);  /* $F200-$F5FF: sprite heap (before adj[] at $F600) */
 
 	sp1_Initialize(SP1_IFLAG_OVERWRITE_TILES | SP1_IFLAG_OVERWRITE_DFILE,
 		CORR_ATTR, 'F');
@@ -2217,7 +2214,8 @@ main()
 		build_adj();
 
 		draw_maze();
-		memset(vis, 0, ROWS * COLS);  /* Clear for BFS after maze gen */
+		memset(vis, 0, ROWS * COLS);  /* Clear for old BFS after maze gen */
+		memset(fbfs_vis, 0, 551u);    /* Clear full-grid BFS vis */
 
 		/* Random starting positions: exit first so others avoid it */
 		random_start(&exit_gx, &exit_gy, 255, 255, 255, 255);

@@ -10,6 +10,9 @@ A playable maze game with brick-textured walls, colour attributes, and sound eff
 
 **Controls:** O/P = left/right, Q/A = up/down
 
+You can either download out/maze.tap into an emulator or just play online:
+https://ipalopezhentsev.github.io/zxspectrum-games/
+
 ## Building
 
 Requires [z88dk](https://z88dk.org/) installed.
