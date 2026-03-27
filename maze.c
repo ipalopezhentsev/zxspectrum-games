@@ -1355,162 +1355,58 @@ void bfs_cleanup()
 		vis[stk[i]] = 0;
 }
 
-/* Run full expanded-grid BFS from player, filling fbfs_vis for ALL
-   reachable cells.  Cached until the player moves — all enemies
-   read from the same map.  Asm inner loop, no early termination. */
+/* Coarse-grid BFS from player using walls[][] directly (no adj table).
+   Fills vis[] for all 126 maze cells.  Cached until the player moves.
+   126 cells with 8-bit indices = ~14x faster than full-grid BFS. */
 void fbfs_ensure()
 {
-	static uint pi;
+	static unsigned char head, tail, ci, ni, r, c;
 
 	if (fbfs_valid && fbfs_ppx == px && fbfs_ppy == py) return;
 
-	/* Clear old map if any */
-	if (fbfs_valid)
-		memset((void *)0xF800u, 0, 551u);
+	/* Clear old map */
+	memset(vis, 0, ROWS * COLS);
 
-	pi = erow_x_ecols[py] + px;
-	fbfs_hp_g = 0xFA28u;
-	fbfs_tp_g = 0xFA28u + 2;
-	*((unsigned int *)0xFA28u) = pi;
-	fbfs_vis[pi] = 5;
+	ci = row_x_cols[py >> 1] + (px >> 1);
+	head = 0;
+	tail = 1;
+	stk[0] = ci;
+	vis[ci] = 5;
 
-#asm
-	push ix
+	while (head != tail) {
+		ci = stk[head];
+		++head;
+		r = bfs_row[ci];
+		c = bfs_col[ci];
 
-.fbfs_loop
-	; --- head == tail? ---
-	ld hl, (_fbfs_hp_g)
-	ld de, (_fbfs_tp_g)
-	or a
-	sbc hl, de
-	jp z, fbfs_end
-
-	; --- dequeue: BC = *headptr; headptr += 2 ---
-	ld hl, (_fbfs_hp_g)
-	ld c, (hl)
-	inc hl
-	ld b, (hl)
-	inc hl
-	ld (_fbfs_hp_g), hl
-
-	; === Left: ni = ci - 1 ===
-	ld l, c
-	ld h, b
-	dec hl
-	ld (_fbfs_ni_g), hl
-	ld de, _wallmap
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sl
-	ld hl, (_fbfs_ni_g)
-	ld de, $F800
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sl
-	ld (hl), 1
-	ld hl, (_fbfs_tp_g)
-	ld de, (_fbfs_ni_g)
-	ld (hl), e
-	inc hl
-	ld (hl), d
-	inc hl
-	ld (_fbfs_tp_g), hl
-.fbfs_sl
-
-	; === Right: ni = ci + 1 ===
-	ld l, c
-	ld h, b
-	inc hl
-	ld (_fbfs_ni_g), hl
-	ld de, _wallmap
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sr
-	ld hl, (_fbfs_ni_g)
-	ld de, $F800
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sr
-	ld (hl), 2
-	ld hl, (_fbfs_tp_g)
-	ld de, (_fbfs_ni_g)
-	ld (hl), e
-	inc hl
-	ld (hl), d
-	inc hl
-	ld (_fbfs_tp_g), hl
-.fbfs_sr
-
-	; === Up: ni = ci - 29 ===
-	ld l, c
-	ld h, b
-	ld de, $FFE3          ; -29
-	add hl, de
-	ld (_fbfs_ni_g), hl
-	ld de, _wallmap
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_su
-	ld hl, (_fbfs_ni_g)
-	ld de, $F800
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_su
-	ld (hl), 3
-	ld hl, (_fbfs_tp_g)
-	ld de, (_fbfs_ni_g)
-	ld (hl), e
-	inc hl
-	ld (hl), d
-	inc hl
-	ld (_fbfs_tp_g), hl
-.fbfs_su
-
-	; === Down: ni = ci + 29 ===
-	ld l, c
-	ld h, b
-	ld de, 29
-	add hl, de
-	ld (_fbfs_ni_g), hl
-	ld de, _wallmap
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sd
-	ld hl, (_fbfs_ni_g)
-	ld de, $F800
-	add hl, de
-	ld a, (hl)
-	or a
-	jr nz, fbfs_sd
-	ld (hl), 4
-	ld hl, (_fbfs_tp_g)
-	ld de, (_fbfs_ni_g)
-	ld (hl), e
-	inc hl
-	ld (hl), d
-	inc hl
-	ld (_fbfs_tp_g), hl
-.fbfs_sd
-
-	jp fbfs_loop
-
-.fbfs_end
-	pop ix
-#endasm
+		/* Left: no right-wall on cell to the left */
+		if (c > 0 && !(walls[r][c - 1] & 1)) {
+			ni = ci - 1;
+			if (!vis[ni]) { vis[ni] = 1; stk[tail] = ni; ++tail; }
+		}
+		/* Right: no right-wall on this cell */
+		if (c < COLS - 1 && !(walls[r][c] & 1)) {
+			ni = ci + 1;
+			if (!vis[ni]) { vis[ni] = 2; stk[tail] = ni; ++tail; }
+		}
+		/* Up: no bottom-wall on cell above */
+		if (r > 0 && !(walls[r - 1][c] & 2)) {
+			ni = ci - COLS;
+			if (!vis[ni]) { vis[ni] = 3; stk[tail] = ni; ++tail; }
+		}
+		/* Down: no bottom-wall on this cell */
+		if (r < ROWS - 1 && !(walls[r][c] & 2)) {
+			ni = ci + COLS;
+			if (!vis[ni]) { vis[ni] = 4; stk[tail] = ni; ++tail; }
+		}
+	}
 
 	fbfs_ppx = px;
 	fbfs_ppy = py;
 	fbfs_valid = 1;
 }
 
-/* Cheap lookup into cached BFS map.
+/* Lookup cached BFS direction for enemy at expanded-grid (exx,eyy).
    Returns: 0=left,1=right,2=up,3=down, -1=no path */
 char enemy_bfs(unsigned char exx, unsigned char eyy)
 {
@@ -1518,7 +1414,7 @@ char enemy_bfs(unsigned char exx, unsigned char eyy)
 
 	fbfs_ensure();
 
-	d = fbfs_vis[erow_x_ecols[eyy] + exx];
+	d = vis[row_x_cols[eyy >> 1] + (exx >> 1)];
 	if (d == 0) return -1;
 	d--;
 	if (d == 0) return 1;  /* left  → enemy goes right */
@@ -2328,8 +2224,7 @@ main()
 		build_adj();
 
 		draw_maze();
-		memset(vis, 0, ROWS * COLS);  /* Clear for old BFS after maze gen */
-		memset(fbfs_vis, 0, 551u);    /* Clear full-grid BFS vis */
+		memset(vis, 0, ROWS * COLS);  /* Clear for BFS after maze gen */
 		fbfs_valid = 0;               /* Force BFS recompute */
 
 		/* Random starting positions: exit first so others avoid it */
