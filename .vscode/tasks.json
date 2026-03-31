@@ -8,8 +8,8 @@
       "args": [
         "+zx",
         "-vn",
-        "-O3",
-        "--opt-code-size",
+        "-O2",
+        "--opt-code-speed",
         "-o",
         "out/maze.bin",
         "maze.c",

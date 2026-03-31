@@ -36,8 +36,10 @@
 
 /* bit 0 = right wall, bit 1 = bottom wall */
 unsigned char walls[ROWS][COLS];
-/* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx]. */
-unsigned char wallmap[EROWS * ECOLS];
+/* Precomputed wall map: 1=wall, 0=passable. Indexed as [gy*ECOLS+gx].
+   551 bytes pinned to $F9F8 (sbrk heap region, but sp1 allocations only
+   reach ~$F400; this address is never touched by the allocator). */
+#define wallmap ((unsigned char *)0xF9F8u)
 unsigned char px, py;    /* player position in expanded grid */
 unsigned char enx[4], eny[4];    /* enemy positions in expanded grid */
 unsigned char last_edir_arr[4];  /* last direction each enemy moved */
@@ -77,7 +79,7 @@ unsigned int rseed;
 struct in_UDK udk;
 unsigned char joy_type;    /* 0=keyboard, 1=kempston, 2=sinclair */
 unsigned char menu_cursor; /* 0-3=difficulty */
-unsigned char diff_cursor = 1; /* 0-3: last selected difficulty item, default Normal */
+unsigned char diff_cursor = 2; /* 0-4: last selected difficulty item, default Normal */
 
 /* Gem map: 1=gem present at maze cell (cx,cy). Index = cy*COLS+cx */
 unsigned char gemmap[ROWS * COLS];
@@ -162,9 +164,11 @@ void colourSpr(unsigned int count, struct sp1_cs *c)
 }
 
 /* BFS lookup tables: precomputed row/col from linear index,
-   eliminates expensive Z80 division by 14 in the BFS inner loop */
-unsigned char bfs_row[ROWS * COLS];
-unsigned char bfs_col[ROWS * COLS];
+   eliminates expensive Z80 division by 14 in the BFS inner loop.
+   Pinned to upper memory ($F8FC/$F97A) — fbfs_vis/fbfs_stk region is
+   dead code (never used), this space is free.  Asm uses literal addrs. */
+#define bfs_row ((unsigned char *)0xF8FCu)
+#define bfs_col ((unsigned char *)0xF97Au)
 /* Precomputed row * COLS: eliminates Z80 multiply by 14 */
 unsigned char row_x_cols[ROWS];
 /* Precomputed row * ECOLS: eliminates Z80 multiply by 29 */
@@ -438,9 +442,10 @@ void hide_sprites()
 }
 
 /* Visited flags and explicit stack for DFS and BFS.
-   Max index = ROWS*COLS-1 (maze cell grid). */
-unsigned char vis[ROWS * COLS];
-unsigned char stk[ROWS * COLS];
+   Max index = ROWS*COLS-1 (maze cell grid).
+   Pinned to upper memory ($F800/$F87E) alongside bfs_row/bfs_col. */
+#define vis ((unsigned char *)0xF800u)
+#define stk ((unsigned char *)0xF87Eu)
 unsigned char sp;
 
 void generate_maze()
@@ -1164,7 +1169,7 @@ void bfs_run_common()
 	; --- Dequeue: ci = stk[head]; head++ ---
 	ld l, b
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld c, (hl)                ; C = ci
 	inc b
@@ -1174,7 +1179,7 @@ void bfs_run_common()
 	; --- Read vis[ci] for propagation mode ---
 	ld l, c
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	ld (_bfs_adj_ptr_g), a    ; low byte = vis[ci]
@@ -1215,7 +1220,7 @@ void bfs_run_common()
 	ld c, a
 	ld l, c
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1233,7 +1238,7 @@ void bfs_run_common()
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), c
 	inc a
@@ -1247,7 +1252,7 @@ void bfs_run_common()
 	ld c, a
 	ld l, c
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1264,7 +1269,7 @@ void bfs_run_common()
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), c
 	inc a
@@ -1278,7 +1283,7 @@ void bfs_run_common()
 	ld c, a
 	ld l, c
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1295,7 +1300,7 @@ void bfs_run_common()
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), c
 	inc a
@@ -1309,7 +1314,7 @@ void bfs_run_common()
 	ld c, a
 	ld l, c
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1326,7 +1331,7 @@ void bfs_run_common()
 	ld a, (_bfs_tail_g)
 	ld l, a
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), c
 	inc a
@@ -1386,7 +1391,7 @@ void fbfs_ensure()
 	; ci = stk[head]; head++
 	ld l, b
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld a, (hl)
 	ld (_fbfs_ci_g), a
@@ -1395,7 +1400,7 @@ void fbfs_ensure()
 	; r = bfs_row[ci]
 	ld l, a
 	ld h, 0
-	ld de, _bfs_row
+	ld de, $F8FC
 	add hl, de
 	ld a, (hl)
 	ld (_fbfs_r_g), a
@@ -1404,7 +1409,7 @@ void fbfs_ensure()
 	ld a, (_fbfs_ci_g)
 	ld l, a
 	ld h, 0
-	ld de, _bfs_col
+	ld de, $F97A
 	add hl, de
 	ld a, (hl)
 	ld (_fbfs_c_g), a
@@ -1437,7 +1442,7 @@ void fbfs_ensure()
 	dec a
 	ld l, a
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1447,7 +1452,7 @@ void fbfs_ensure()
 	dec a
 	ld l, c
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), a
 	inc c
@@ -1467,7 +1472,7 @@ void fbfs_ensure()
 	inc a
 	ld l, a
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1477,7 +1482,7 @@ void fbfs_ensure()
 	inc a
 	ld l, c
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), a
 	inc c
@@ -1500,7 +1505,7 @@ void fbfs_ensure()
 	sub 14
 	ld l, a
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1510,7 +1515,7 @@ void fbfs_ensure()
 	sub 14
 	ld l, c
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), a
 	inc c
@@ -1531,7 +1536,7 @@ void fbfs_ensure()
 	add a, 14
 	ld l, a
 	ld h, 0
-	ld de, _vis
+	ld de, $F800
 	add hl, de
 	ld a, (hl)
 	or a
@@ -1541,7 +1546,7 @@ void fbfs_ensure()
 	add a, 14
 	ld l, c
 	ld h, 0
-	ld de, _stk
+	ld de, $F87E
 	add hl, de
 	ld (hl), a
 	inc c
@@ -1592,6 +1597,49 @@ char enemy_random_dir(unsigned char exx, unsigned char eyy)
 }
 
 
+/* Pick the valid direction from (exx,eyy) that minimises Manhattan distance
+   to the player.  Breaks ties randomly among equally-good moves. */
+char enemy_manhattan_dir(unsigned char exx, unsigned char eyy)
+{
+	/* best[] and nb must survive the rand() call; everything else is
+	   consumed before it, so non-static is safe (no fn calls in loop). */
+	static unsigned char best[4];
+	static unsigned char nb;
+	unsigned char dirs[4];
+	unsigned int fi;
+	unsigned char nd, i;
+	int dx, dy, dist, best_dist;
+	unsigned char nx, ny;
+
+	fi = erow_x_ecols[eyy] + exx;
+	nd = 0;
+	if (!wallmap[fi - 1])     dirs[nd++] = 0;
+	if (!wallmap[fi + 1])     dirs[nd++] = 1;
+	if (!wallmap[fi - ECOLS]) dirs[nd++] = 2;
+	if (!wallmap[fi + ECOLS]) dirs[nd++] = 3;
+	if (nd == 0) return -1;
+
+	best_dist = 32767;
+	nb = 0;
+	for (i = 0; i != nd; ++i) {
+		nx = exx + dir_dx[dirs[i]];
+		ny = eyy + dir_dy[dirs[i]];
+		dx = (int)nx - (int)px;
+		dy = (int)ny - (int)py;
+		if (dx < 0) dx = -dx;
+		if (dy < 0) dy = -dy;
+		dist = dx + dy;
+		if (dist < best_dist) {
+			best_dist = dist;
+			nb = 0;
+			best[nb++] = dirs[i];
+		} else if (dist == best_dist) {
+			best[nb++] = dirs[i];
+		}
+	}
+	return best[rand() % nb];
+}
+
 /* Decide direction for enemy n. Does NOT move the enemy.
    Returns 0=left,1=right,2=up,3=down, -1=no valid direction. */
 char decide_enemy_dir(uchar n) __z88dk_fastcall
@@ -1605,8 +1653,11 @@ char decide_enemy_dir(uchar n) __z88dk_fastcall
 	old_ey = eny[sn];
 
 	if ((old_ex & 1) && (old_ey & 1)) {
-		/* At maze cell — always BFS chase (testing) */
-		dir = enemy_bfs(old_ex, old_ey);
+		/* At maze cell — blend BFS and Manhattan based on chase_pct */
+		if (rand() % 100 < chase_pct)
+			dir = enemy_bfs(old_ex, old_ey);
+		else
+			dir = enemy_manhattan_dir(old_ex, old_ey);
 		if (dir < 0)
 			dir = enemy_random_dir(old_ex, old_ey);
 	} else {
@@ -2003,17 +2054,18 @@ void draw_menu()
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
 	gotoxy(27, 4); printf("Difficulty:");
 
-	draw_item(5,  "Easy",      menu_cursor == 0);
-	draw_item(6,  "Normal",    menu_cursor == 1);
-	draw_item(7,  "Hard",      menu_cursor == 2);
-	draw_item(8,  "Nightmare", menu_cursor == 3);
+	draw_item(5,  "Dumb",      menu_cursor == 0);
+	draw_item(6,  "Easy",      menu_cursor == 1);
+	draw_item(7,  "Normal",    menu_cursor == 2);
+	draw_item(8,  "Hard",      menu_cursor == 3);
+	draw_item(9,  "Nightmare", menu_cursor == 4);
 
 	/* Footer */
 	zx_setink(INK_CYAN);
 	zx_setpaper(PAPER_BLACK);
 	*((unsigned char *)ATTR_P_ADDR) &= ~BRIGHT;
 	len = sprintf(txt_buffer, "Q/A: select  FIRE: start");
-	gotoxy(center_x(len), 10); printf(txt_buffer);
+	gotoxy(center_x(len), 11); printf(txt_buffer);
 
 	/* Main Cast — render SP1 tile icons first, then text on top */
 	sp1_PrintAtInv(14, 7, PLAYER_ATTR, 'P');
@@ -2245,17 +2297,19 @@ main()
 				if (k == 'q' && !prev_key) {
 					if (diff_cursor > 0) diff_cursor--;
 					menu_cursor = diff_cursor;
-					draw_item(5, "Easy",      menu_cursor == 0);
-					draw_item(6, "Normal",    menu_cursor == 1);
-					draw_item(7, "Hard",      menu_cursor == 2);
-					draw_item(8, "Nightmare", menu_cursor == 3);
+					draw_item(5, "Dumb",      menu_cursor == 0);
+					draw_item(6, "Easy",      menu_cursor == 1);
+					draw_item(7, "Normal",    menu_cursor == 2);
+					draw_item(8, "Hard",      menu_cursor == 3);
+					draw_item(9, "Nightmare", menu_cursor == 4);
 				} else if (k == 'a' && !prev_key) {
-					if (diff_cursor < 3) diff_cursor++;
+					if (diff_cursor < 4) diff_cursor++;
 					menu_cursor = diff_cursor;
-					draw_item(5, "Easy",      menu_cursor == 0);
-					draw_item(6, "Normal",    menu_cursor == 1);
-					draw_item(7, "Hard",      menu_cursor == 2);
-					draw_item(8, "Nightmare", menu_cursor == 3);
+					draw_item(5, "Dumb",      menu_cursor == 0);
+					draw_item(6, "Easy",      menu_cursor == 1);
+					draw_item(7, "Normal",    menu_cursor == 2);
+					draw_item(8, "Hard",      menu_cursor == 3);
+					draw_item(9, "Nightmare", menu_cursor == 4);
 				} else if ((k == '\r' || k == ' ') && !prev_key) {
 					joy_type = 0;
 					break;
@@ -2286,6 +2340,15 @@ main()
 		srand(rseed);
 
 		if (difficulty == 1) {
+			/* Dumb: enemies always use Manhattan distance (no BFS) */
+			base_enemies = 3;
+			base_frames = 8;
+			base_chase = 0;       /* pure Manhattan, never increases */
+			extra_wall_pct = 3;   /* 1-in-3 = ~33% walls removed */
+			extra_halls_base = 5;
+			extra_halls_rng = 3;  /* 5-8 halls */
+			base_time = 90;
+		} else if (difficulty == 2) {
 			base_enemies = 1;
 			base_frames = 8;
 			base_chase = 10;
@@ -2293,7 +2356,7 @@ main()
 			extra_halls_base = 5;
 			extra_halls_rng = 3;  /* 5-8 halls */
 			base_time = 90;
-		} else if (difficulty == 2) {
+		} else if (difficulty == 3) {
 			base_enemies = 2;
 			base_frames = 6;
 			base_chase = 25;
@@ -2301,7 +2364,7 @@ main()
 			extra_halls_base = 3;
 			extra_halls_rng = 2;  /* 3-5 halls */
 			base_time = 60;
-		} else if (difficulty == 3) {
+		} else if (difficulty == 4) {
 			base_enemies = 3;
 			base_frames = 4;
 			base_chase = 50;
@@ -2339,9 +2402,14 @@ main()
 			v = base_frames - prog / 2;
 			enemy_frames = (v < 2) ? 2 : v;
 
-			/* Increase chase AI: +35% per level, cap at 100 */
-			v = base_chase + prog * 35;
-			chase_pct = (v > 100) ? 100 : v;
+			/* Increase chase AI: +35% per level, cap at 100.
+			   Dumb difficulty keeps base_chase=0 forever. */
+			if (base_chase == 0) {
+				chase_pct = 0;
+			} else {
+				v = base_chase + prog * 35;
+				chase_pct = (v > 100) ? 100 : v;
+			}
 
 			/* Reduce time: -3 sec per level, min 15 */
 			v = base_time - prog * 3;
@@ -2358,9 +2426,10 @@ main()
 			static unsigned char len;
 			static char *dname;
 			set_print_attr(INK_WHITE | PAPER_BLACK);
-			dname = (difficulty == 1) ? "Easy" :
-			        (difficulty == 2) ? "Normal" :
-			        (difficulty == 3) ? "Hard" : "Nightmare";
+			dname = (difficulty == 1) ? "Dumb" :
+			        (difficulty == 2) ? "Easy" :
+			        (difficulty == 3) ? "Normal" :
+			        (difficulty == 4) ? "Hard" : "Nightmare";
 			if (demo_mode)
 				len = sprintf(txt_buffer, "--- DEMO ---");
 			else {
